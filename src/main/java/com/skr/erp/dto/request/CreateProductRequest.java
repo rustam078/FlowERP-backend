@@ -3,7 +3,6 @@ package com.skr.erp.dto.request;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
@@ -15,12 +14,10 @@ public class CreateProductRequest {
 
     @NotBlank(message = "Product name is required")
     private String name;
-    @NotBlank(message = "Product icon is required")
-    private String iconName;
+    private String iconName; // optional
     private String description;
 
-    // One or more piece codes (each code + rate), all created with the product.
-    @NotEmpty(message = "At least one piece code is required")
+    // Optional piece codes (legacy). Products created from the Product page carry none.
     @Valid
     private List<CreatePieceCodeRequest> pieceCodes;
 

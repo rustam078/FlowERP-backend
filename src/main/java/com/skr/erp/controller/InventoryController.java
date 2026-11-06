@@ -4,6 +4,7 @@ import com.skr.erp.common.constants.InventoryBatchStatus;
 import com.skr.erp.common.response.CommonResponse;
 import com.skr.erp.common.response.PageResponse;
 import com.skr.erp.dto.request.AdjustBatchStockRequest;
+import com.skr.erp.dto.request.ProduceRequest;
 import com.skr.erp.dto.response.InventoryBatchResponse;
 import com.skr.erp.dto.response.InventoryResponse;
 import com.skr.erp.dto.response.LowStockAlertResponse;
@@ -56,6 +57,14 @@ public class InventoryController {
     @GetMapping("/alerts")
     public ResponseEntity<List<LowStockAlertResponse>> getLowStockAlerts() {
         return ResponseEntity.ok(inventoryService.getLowStockAlerts());
+    }
+
+    @PostMapping("/produce")
+    public ResponseEntity<CommonResponse<List<InventoryBatchResponse>>> produce(@Valid @RequestBody ProduceRequest request) {
+        List<InventoryBatchResponse> batches = inventoryService.produce(request);
+        return ResponseEntity.ok(CommonResponse.<List<InventoryBatchResponse>>builder().success(true)
+                .message("Stock produced successfully")
+                .data(batches).build());
     }
 
     @PatchMapping("/batches/{batchId}/adjust")

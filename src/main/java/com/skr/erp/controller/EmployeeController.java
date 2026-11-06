@@ -2,8 +2,11 @@ package com.skr.erp.controller;
 
 import com.skr.erp.common.response.CommonResponse;
 import com.skr.erp.dto.request.CreateEmployeeRequest;
+import com.skr.erp.dto.request.MarkAttendanceRequest;
+import com.skr.erp.dto.request.MarkAttendanceRangeRequest;
 import com.skr.erp.dto.request.UpdateEmployeeRequest;
 import com.skr.erp.dto.request.UpdateEmployeeStatusRequest;
+import com.skr.erp.dto.response.AttendanceResponse;
 import com.skr.erp.dto.response.EmployeeCalendarResponse;
 import com.skr.erp.dto.response.EmployeeDetailsResponse;
 import com.skr.erp.dto.response.EmployeeResponse;
@@ -85,6 +88,35 @@ public class EmployeeController {
                 .message("Employee statistics fetched successfully")
                 .data(employeeService.getStats()).build();
 
+    }
+
+    // ── Attendance (exception-based leave/absent marking) ──
+    @GetMapping("/{id}/attendance")
+    public CommonResponse<List<AttendanceResponse>> getAttendance(@PathVariable UUID id,
+            @RequestParam LocalDate fromDate, @RequestParam LocalDate toDate) {
+        return CommonResponse.<List<AttendanceResponse>>builder().success(true)
+                .message("Attendance fetched successfully")
+                .data(employeeService.getAttendance(id, fromDate, toDate)).build();
+    }
+
+    @PostMapping("/{id}/attendance")
+    public CommonResponse<AttendanceResponse> markAttendance(@PathVariable UUID id, @Valid @RequestBody MarkAttendanceRequest request) {
+        return CommonResponse.<AttendanceResponse>builder().success(true)
+                .message("Attendance marked")
+                .data(employeeService.markAttendance(id, request)).build();
+    }
+
+    @PostMapping("/{id}/attendance/range")
+    public CommonResponse<List<AttendanceResponse>> markAttendanceRange(@PathVariable UUID id, @Valid @RequestBody MarkAttendanceRangeRequest request) {
+        return CommonResponse.<List<AttendanceResponse>>builder().success(true)
+                .message("Attendance marked")
+                .data(employeeService.markAttendanceRange(id, request)).build();
+    }
+
+    @DeleteMapping("/{id}/attendance")
+    public CommonResponse<String> clearAttendance(@PathVariable UUID id, @RequestParam LocalDate date) {
+        employeeService.clearAttendance(id, date);
+        return CommonResponse.<String>builder().success(true).message("Attendance cleared").data("Success").build();
     }
 
     @GetMapping("/{id}/report/pdf")

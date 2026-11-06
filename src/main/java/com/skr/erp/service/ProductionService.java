@@ -43,10 +43,6 @@ public class ProductionService {
     private final ProductionEntryDetailRepository productionEntryDetailRepository;
     private final EmployeeRepository employeeRepository;
     private final ProductRepository productRepository;
-    private final ProductRateRepository productRateRepository;
-    private final ProductPieceCodeRepository productPieceCodeRepository;
-    private final InventoryService inventoryService;
-    private final InventoryBatchRepository inventoryBatchRepository;
     private final SystemSettingRepository systemSettingRepository;
 
     public ProductionResponse create(CreateProductionRequest request) {
@@ -63,41 +59,29 @@ public class ProductionService {
         productionEntry.setProductionDate(request.getProductionDate());
 
         for (ProductionItemRequest item : request.getItems()) {
-
-            Product product = productRepository.findById(item.getProductId())
-                    .orElseThrow(() -> new BusinessException("Product not found"));
-
-            ProductPieceCode pieceCode = productPieceCodeRepository.findById(item.getPieceCodeId())
-                    .orElseThrow(() -> new BusinessException("Piece code not found"));
-
-            if (!pieceCode.getActive()) {
-                throw new BusinessException("Piece code inactive");
-            }
-
-            ProductionEntryDetail detail = new ProductionEntryDetail();
-            detail.setProductionEntry(productionEntry);
-            detail.setProduct(product);
-            detail.setPieceCode(pieceCode);
-            detail.setQuantity(item.getQuantity());
-            BigDecimal rate = pieceCode.getRate();
-            detail.setRateSnapshot(rate);
-            detail.setAmountSnapshot(rate.multiply(BigDecimal.valueOf(item.getQuantity())));
-            detail.setPieceCodeSnapshot(pieceCode.getCode());
-            detail.setProductNameSnapshot(product.getName());
-            productionEntry.getDetails().add(detail);
-
+            productionEntry.getDetails().add(buildDetail(productionEntry, item));
         }
 
         productionEntry = productionEntryRepository.save(productionEntry);
-        createInventoryBatch(productionEntry);
         return map(productionEntry);
     }
 
-    private void createInventoryBatch(ProductionEntry productionEntry) {
-        for (ProductionEntryDetail detail : productionEntry.getDetails()) {
-            UUID batchId = inventoryService.addProductionStock(detail);
-            detail.setInventoryBatchId(batchId);
+    // Build one piece-work detail: free-text work + qty + locked rate; product is optional (reporting).
+    private ProductionEntryDetail buildDetail(ProductionEntry entry, ProductionItemRequest item) {
+        ProductionEntryDetail detail = new ProductionEntryDetail();
+        detail.setProductionEntry(entry);
+        detail.setWork(item.getWork());
+        if (item.getProductId() != null) {
+            Product product = productRepository.findById(item.getProductId())
+                    .orElseThrow(() -> new BusinessException("Product not found"));
+            detail.setProduct(product);
+            detail.setProductNameSnapshot(product.getName());
         }
+        detail.setQuantity(item.getQuantity());
+        BigDecimal rate = item.getRate() != null ? item.getRate() : BigDecimal.ZERO;
+        detail.setRateSnapshot(rate);
+        detail.setAmountSnapshot(rate.multiply(BigDecimal.valueOf(item.getQuantity())));
+        return detail;
     }
 
     @Transactional(readOnly = true)
@@ -139,17 +123,7 @@ public class ProductionService {
         productionEntry.getDetails().clear();
 
         for (ProductionItemRequest item : request.getItems()) {
-            Product product = productRepository.findById(item.getProductId()).orElseThrow(() -> new BusinessException("Product not found"));
-            BigDecimal rate = productRateRepository.findTopByProductIdAndEffectiveFromLessThanEqualOrderByEffectiveFromDesc(product.getId(), request.getProductionDate())
-                                                    .map(ProductRate::getRate).orElse(BigDecimal.ZERO);
-            ProductionEntryDetail detail = new ProductionEntryDetail();
-            detail.setProductionEntry(productionEntry);
-            detail.setProduct(product);
-            detail.setQuantity(item.getQuantity());
-            detail.setRateSnapshot(rate);
-            detail.setAmountSnapshot(rate.multiply(BigDecimal.valueOf(item.getQuantity())));
-            detail.setProductNameSnapshot(product.getName());
-            productionEntry.getDetails().add(detail);
+            productionEntry.getDetails().add(buildDetail(productionEntry, item));
         }
         productionEntry = productionEntryRepository.save(productionEntry);
         return map(productionEntry);
@@ -157,39 +131,10 @@ public class ProductionService {
     }
 
     public void delete(UUID productionId) {
+        // Piece-work entries hold no inventory, so deleting just removes the record.
         ProductionEntry productionEntry = productionEntryRepository.findById(productionId)
                 .orElseThrow(() -> new BusinessException("Production entry not found"));
-
-        Map<UUID, BigDecimal> needByBatch = new LinkedHashMap<>();
-        for (ProductionEntryDetail detail : productionEntry.getDetails()) {
-            InventoryBatch batch = resolveBatch(detail);
-            if (batch == null) continue;
-            needByBatch.merge(batch.getId(), BigDecimal.valueOf(detail.getQuantity()), BigDecimal::add);
-        }
-
-        for (Map.Entry<UUID, BigDecimal> e : needByBatch.entrySet()) {
-            InventoryBatch batch = inventoryBatchRepository.findById(e.getKey()).orElse(null);
-            if (batch == null) continue;
-            if (batch.getQuantityAvailable().compareTo(e.getValue()) < 0) {
-                BigDecimal sold = e.getValue().subtract(batch.getQuantityAvailable());
-                throw new BusinessException("Can't delete — " + sold.stripTrailingZeros().toPlainString()
-                        + " piece(s) of '" + batch.getProduct().getName() + "' from batch " + batch.getBatchNumber()
-                        + " are already sold. Sold stock can't be reversed.");
-            }
-        }
-
-        for (Map.Entry<UUID, BigDecimal> e : needByBatch.entrySet()) {
-            inventoryBatchRepository.findById(e.getKey())
-                    .ifPresent(batch -> inventoryService.removeProductionStock(batch, e.getValue()));
-        }
         productionEntryRepository.delete(productionEntry);
-    }
-
-    private InventoryBatch resolveBatch(ProductionEntryDetail detail) {
-        if (detail.getInventoryBatchId() != null) {
-            return inventoryBatchRepository.findById(detail.getInventoryBatchId()).orElse(null);
-        }
-        return inventoryBatchRepository.findFirstBySourceAndSourceId("MANUFACTURED", detail.getId()).orElse(null);
     }
 
 
@@ -269,7 +214,7 @@ public class ProductionService {
             for (ProductionItemResponse item : d.getItems()) {
                 rows.append("<tr>")
                         .append("<td>").append(esc(item.getProductName())).append("</td>")
-                        .append("<td>").append(esc(item.getPieceCode() != null ? item.getPieceCode() : "-"))
+                        .append("<td>").append(esc(item.getWork() != null ? item.getWork() : "-"))
                         .append("</td>").append("<td class=\"right\">").append(item.getQuantity() != null ? item.getQuantity() : 0).append("</td>")
                         .append("<td class=\"right\">Rs. ").append(item.getRate() != null ? nf.format(item.getRate()) : "0").append("</td>")
                         .append("<td class=\"right\">Rs. ").append(item.getAmount() != null ? nf.format(item.getAmount()) : "0").append("</td>")
@@ -327,13 +272,13 @@ public class ProductionService {
 
     private ProductionItemResponse toItemResponse(ProductionEntryDetail detail) {
         return ProductionItemResponse.builder()
-                .productId(detail.getProduct().getId())
+                .work(detail.getWork())
+                .productId(detail.getProduct() != null ? detail.getProduct().getId() : null)
                 .productName(detail.getProductNameSnapshot())
                 .quantity(detail.getQuantity())
                 .rate(detail.getRateSnapshot())
                 .amount(detail.getAmountSnapshot())
-                .pieceCodeId(detail.getPieceCode() != null ? detail.getPieceCode().getId() : null)
-                .pieceCode(detail.getPieceCodeSnapshot()).build();
+                .build();
     }
 
 

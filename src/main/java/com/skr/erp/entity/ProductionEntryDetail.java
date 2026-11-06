@@ -17,8 +17,13 @@ public class ProductionEntryDetail extends BaseEntity {
     @JoinColumn(name = "production_entry_id", nullable = false)
     private ProductionEntry productionEntry;
 
+    // The piece-work task (e.g. "Cutting"). Free text; the deal is locked per entry.
+    @Column(name = "work")
+    private String work;
+
+    // Optional link to a product (reporting only). Piece-work is not tied to a final product.
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "product_id", nullable = false)
+    @JoinColumn(name = "product_id")
     private Product product;
 
     @Column(nullable = false)

@@ -56,9 +56,11 @@ public class ProductService {
 
         product = productRepository.save(product);
 
-        // Piece codes + initial cost/selling price (effective today) are saved with the product.
-        for (CreatePieceCodeRequest pieceCode : request.getPieceCodes()) {
-            savePieceCode(product, pieceCode);
+        // Optional legacy piece codes; products added from the Product page carry none.
+        if (request.getPieceCodes() != null) {
+            for (CreatePieceCodeRequest pieceCode : request.getPieceCodes()) {
+                savePieceCode(product, pieceCode);
+            }
         }
         saveInitialPricing(product, request.getCost(), request.getSellingPrice());
 

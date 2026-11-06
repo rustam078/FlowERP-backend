@@ -1,12 +1,16 @@
 package com.skr.erp.entity;
 
+import com.skr.erp.common.constants.PaymentType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
 import lombok.Getter;
 import lombok.Setter;
 import org.hibernate.annotations.BatchSize;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 
 @Entity
@@ -35,4 +39,17 @@ public class Employee extends BaseEntity {
 
     @Column(nullable = false)
     private Boolean active = true;
+
+    // Pay model: PIECE_RATE (earns per piece-work) or MONTHLY (fixed basic salary).
+    @Enumerated(EnumType.STRING)
+    @Column(name = "payment_type", nullable = false, length = 20)
+    private PaymentType paymentType = PaymentType.PIECE_RATE;
+
+    // Basic salary for MONTHLY employees (null for piece-rate).
+    @Column(name = "monthly_salary", precision = 12, scale = 2)
+    private BigDecimal monthlySalary;
+
+    // Advance paid at onboarding (recovered later from earnings; seeds the payroll ledger).
+    @Column(name = "opening_advance", precision = 12, scale = 2)
+    private BigDecimal openingAdvance;
 }

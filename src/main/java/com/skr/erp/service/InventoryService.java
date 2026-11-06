@@ -4,6 +4,8 @@ import com.skr.erp.common.constants.InventoryBatchStatus;
 import com.skr.erp.common.constants.ProductSource;
 import com.skr.erp.common.response.PageResponse;
 import com.skr.erp.dto.request.AdjustBatchStockRequest;
+import com.skr.erp.dto.request.ProduceRequest;
+import com.skr.erp.dto.request.ProduceItemRequest;
 import com.skr.erp.dto.response.InventoryBatchResponse;
 import com.skr.erp.dto.response.InventoryResponse;
 import com.skr.erp.dto.response.LowStockAlertResponse;
@@ -101,6 +103,71 @@ public class InventoryService {
         }
         batch = inventoryBatchRepository.save(batch);
         return batch.getId();
+    }
+
+    // Produce finished stock for one or more products in a single call (bulk).
+    // Each item makes a MANUFACTURED batch at its own cost/selling (same cost+selling → consolidate).
+    @Transactional
+    public List<InventoryBatchResponse> produce(ProduceRequest request) {
+        if (request.getItems() == null || request.getItems().isEmpty()) {
+            throw new BusinessException("Add at least one product to produce");
+        }
+        LocalDate date = request.getDate() != null ? request.getDate() : LocalDate.now();
+        List<InventoryBatchResponse> result = new ArrayList<>();
+        for (ProduceItemRequest item : request.getItems()) {
+            Product product = productRepository.findById(item.getProductId())
+                    .orElseThrow(() -> new BusinessException("Product not found"));
+            BigDecimal qty = item.getQuantity();
+            if (qty == null || qty.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new BusinessException("Quantity must be greater than zero for " + product.getName());
+            }
+            // Blank cost/selling fall back to the product's base (material cost / current sale price).
+            BigDecimal unitCost = item.getUnitCost() != null ? item.getUnitCost() : getMaterialCost(product);
+            BigDecimal sellingPrice = item.getSellingPrice() != null ? item.getSellingPrice() : getCurrentSalePrice(product.getId());
+            InventoryBatch batch = addManufacturedStock(product, qty, unitCost, sellingPrice, date);
+            result.add(toBatchResponse(batch));
+        }
+        return result;
+    }
+
+    // Create or consolidate a MANUFACTURED batch for a product at an explicit cost + selling price.
+    private InventoryBatch addManufacturedStock(Product product, BigDecimal qty, BigDecimal unitCost, BigDecimal sellingPrice, LocalDate date) {
+        InventoryBatch batch = null;
+        if (sellingPrice != null) {
+            batch = inventoryBatchRepository.findMergeableBatches(product.getId(), unitCost, sellingPrice)
+                    .stream().findFirst().orElse(null);
+        }
+        if (batch != null) {
+            batch.setQuantityReceived(batch.getQuantityReceived().add(qty));
+            batch.setQuantityAvailable(batch.getQuantityAvailable().add(qty));
+            batch.setTotalCost(batch.getQuantityReceived().multiply(unitCost));
+        } else {
+            batch = new InventoryBatch();
+            batch.setBatchNumber(generateBatchNumber.generate());
+            batch.setProduct(product);
+            batch.setSource(ProductSource.MANUFACTURED.name());
+            batch.setSourceId(product.getId()); // no production detail; product is the source ref
+            batch.setReceivedDate(date);
+            batch.setQuantityReceived(qty);
+            batch.setQuantityAvailable(qty);
+            batch.setUnitCost(unitCost);
+            batch.setSellingPrice(sellingPrice);
+            batch.setTotalCost(unitCost.multiply(qty));
+            batch.setStatus(InventoryBatchStatus.ACTIVE);
+            batch.setRemarks("Produced");
+        }
+        return inventoryBatchRepository.save(batch);
+    }
+
+    private InventoryBatchResponse toBatchResponse(InventoryBatch batch) {
+        BigDecimal batchValue = batch.getQuantityAvailable().multiply(batch.getUnitCost());
+        return InventoryBatchResponse.builder()
+                .batchId(batch.getId()).batchNumber(batch.getBatchNumber())
+                .source(ProductSource.valueOf(batch.getSource()))
+                .receivedDate(batch.getReceivedDate()).totalQuantity(batch.getQuantityReceived())
+                .quantityAvailable(batch.getQuantityAvailable()).unitCost(batch.getUnitCost())
+                .sellingPrice(batch.getSellingPrice())
+                .batchValue(batchValue).status(batch.getStatus().name()).build();
     }
 
     @Transactional

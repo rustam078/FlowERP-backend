@@ -1,5 +1,6 @@
 package com.skr.erp.dto.response;
 
+import com.skr.erp.common.constants.PaymentType;
 import lombok.Builder;
 import lombok.Data;
 
@@ -17,6 +18,9 @@ public class EmployeeResponse {
     private String address;
     private LocalDate joiningDate;
     private Boolean active;
+    private PaymentType paymentType;
+    private BigDecimal monthlySalary;
+    private BigDecimal openingAdvance;
     private BigDecimal currentMonthEarning;
     private BigDecimal totalEarning;
 

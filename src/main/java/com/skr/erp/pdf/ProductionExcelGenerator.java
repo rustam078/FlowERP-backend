@@ -88,7 +88,7 @@ public class ProductionExcelGenerator {
                 for (ProductionItemResponse item : d.getItems()) {
                     Row row = sheet.createRow(r++);
                     row.createCell(0).setCellValue(nn(item.getProductName()));
-                    row.createCell(1).setCellValue(nn(item.getPieceCode()));
+                    row.createCell(1).setCellValue(nn(item.getWork()));
                     row.createCell(2).setCellValue(item.getQuantity() != null ? item.getQuantity() : 0);
                     Cell rate = row.createCell(3);
                     rate.setCellValue(item.getRate() != null ? item.getRate().doubleValue() : 0);

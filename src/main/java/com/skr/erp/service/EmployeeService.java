@@ -1,13 +1,18 @@
 package com.skr.erp.service;
 
 import com.skr.erp.dto.request.CreateEmployeeRequest;
+import com.skr.erp.dto.request.MarkAttendanceRequest;
+import com.skr.erp.dto.request.MarkAttendanceRangeRequest;
 import com.skr.erp.dto.request.UpdateEmployeeRequest;
 import com.skr.erp.dto.response.*;
+import com.skr.erp.common.constants.PaymentType;
 import com.skr.erp.entity.Employee;
+import com.skr.erp.entity.EmployeeAttendance;
 import com.skr.erp.entity.ProductRate;
 import com.skr.erp.entity.ProductionEntry;
 import com.skr.erp.entity.ProductionEntryDetail;
 import com.skr.erp.exception.BusinessException;
+import com.skr.erp.repository.EmployeeAttendanceRepository;
 import com.skr.erp.repository.EmployeeRepository;
 import com.skr.erp.repository.ProductRateRepository;
 import com.skr.erp.repository.ProductionEntryDetailRepository;
@@ -27,6 +32,7 @@ import java.util.stream.Collectors;
 public class EmployeeService {
 
     private final EmployeeRepository employeeRepository;
+    private final EmployeeAttendanceRepository employeeAttendanceRepository;
     private final ProductionEntryRepository productionEntryRepository;
     private final ProductionEntryDetailRepository productionEntryDetailRepository;
     private final ProductRateRepository productRateRepository;
@@ -44,6 +50,9 @@ public class EmployeeService {
         employee.setAddress(request.getAddress());
         employee.setJoiningDate(request.getJoiningDate());
         employee.setActive(true);
+        employee.setPaymentType(request.getPaymentType() != null ? request.getPaymentType() : PaymentType.PIECE_RATE);
+        employee.setMonthlySalary(request.getMonthlySalary());
+        employee.setOpeningAdvance(request.getOpeningAdvance());
         employee = employeeRepository.save(employee);
         return map(employee);
     }
@@ -86,6 +95,9 @@ public class EmployeeService {
                 .address(employee.getAddress())
                 .joiningDate(employee.getJoiningDate())
                 .active(employee.getActive())
+                .paymentType(employee.getPaymentType())
+                .monthlySalary(employee.getMonthlySalary())
+                .openingAdvance(employee.getOpeningAdvance())
                 .currentMonthEarning(currentMonthEarning)
                 .totalEarning(totalEarning)
                 .build();
@@ -111,6 +123,9 @@ public class EmployeeService {
         employee.setAddress(request.getAddress());
         employee.setJoiningDate(request.getJoiningDate());
         employee.setActive(request.getActive());
+        if (request.getPaymentType() != null) employee.setPaymentType(request.getPaymentType());
+        employee.setMonthlySalary(request.getMonthlySalary());
+        employee.setOpeningAdvance(request.getOpeningAdvance());
         employee = employeeRepository.save(employee);
         return map(employee);
     }
@@ -121,6 +136,49 @@ public class EmployeeService {
         employeeRepository.save(employee);
     }
 
+    // ── Attendance (exception-based: only absent / half-day days are stored) ──
+    @Transactional(readOnly = true)
+    public List<AttendanceResponse> getAttendance(UUID employeeId, LocalDate from, LocalDate to) {
+        return employeeAttendanceRepository.findByEmployeeIdAndDateBetween(employeeId, from, to).stream()
+                .map(a -> AttendanceResponse.builder().date(a.getDate()).status(a.getStatus()).build())
+                .toList();
+    }
+
+    public AttendanceResponse markAttendance(UUID employeeId, MarkAttendanceRequest request) {
+        Employee employee = employeeRepository.findById(employeeId).orElseThrow(() -> new BusinessException("Employee not found"));
+        EmployeeAttendance att = employeeAttendanceRepository.findByEmployeeIdAndDate(employeeId, request.getDate())
+                .orElseGet(EmployeeAttendance::new);
+        att.setEmployee(employee);
+        att.setDate(request.getDate());
+        att.setStatus(request.getStatus());
+        att = employeeAttendanceRepository.save(att);
+        return AttendanceResponse.builder().date(att.getDate()).status(att.getStatus()).build();
+    }
+
+    public void clearAttendance(UUID employeeId, LocalDate date) {
+        employeeAttendanceRepository.findByEmployeeIdAndDate(employeeId, date)
+                .ifPresent(employeeAttendanceRepository::delete);
+    }
+
+    // Mark every day in an inclusive range with the same status (e.g. 10th–20th leave).
+    public List<AttendanceResponse> markAttendanceRange(UUID employeeId, MarkAttendanceRangeRequest request) {
+        if (request.getFromDate().isAfter(request.getToDate())) {
+            throw new BusinessException("From date cannot be after To date");
+        }
+        Employee employee = employeeRepository.findById(employeeId).orElseThrow(() -> new BusinessException("Employee not found"));
+        List<AttendanceResponse> result = new ArrayList<>();
+        for (LocalDate d = request.getFromDate(); !d.isAfter(request.getToDate()); d = d.plusDays(1)) {
+            EmployeeAttendance att = employeeAttendanceRepository.findByEmployeeIdAndDate(employeeId, d)
+                    .orElseGet(EmployeeAttendance::new);
+            att.setEmployee(employee);
+            att.setDate(d);
+            att.setStatus(request.getStatus());
+            att = employeeAttendanceRepository.save(att);
+            result.add(AttendanceResponse.builder().date(att.getDate()).status(att.getStatus()).build());
+        }
+        return result;
+    }
+
     @Transactional(readOnly = true)
     public EmployeeDetailsResponse getDetails(UUID employeeId, LocalDate fromDate, LocalDate toDate) {
         Employee employee = employeeRepository.findById(employeeId).orElseThrow(() -> new BusinessException("Employee not found"));
@@ -128,29 +186,42 @@ public class EmployeeService {
 
         int totalQty = 0;
         BigDecimal totalEarnings = BigDecimal.ZERO;
-        Map<UUID, EmployeeProductSummaryResponse> productMap = new HashMap<>();
+        // Group piece-work by the WORK/task (product no longer applies); productId stays null.
+        Map<String, EmployeeProductSummaryResponse> workMap = new LinkedHashMap<>();
+        Map<String, EmployeeCurrentMonthProductResponse> currentMonthMap = new LinkedHashMap<>();
         List<EmployeeProductionHistoryResponse> history = new ArrayList<>();
         YearMonth currentMonth = YearMonth.now();
         BigDecimal currentMonthEarnings = BigDecimal.ZERO;
 
         for (ProductionEntry entry : entries) {
+            boolean isCurrent = YearMonth.from(entry.getProductionDate()).equals(currentMonth);
             for (ProductionEntryDetail detail : entry.getDetails()) {
                 BigDecimal earning = detail.getAmountSnapshot() == null ? BigDecimal.ZERO : detail.getAmountSnapshot();
                 BigDecimal rate = detail.getRateSnapshot() == null ? BigDecimal.ZERO : detail.getRateSnapshot();
+                String work = workLabel(detail);
                 totalQty += detail.getQuantity();
                 totalEarnings = totalEarnings.add(earning);
-                if (YearMonth.from(entry.getProductionDate()).equals(currentMonth)) {
-                    currentMonthEarnings = currentMonthEarnings.add(earning);
-                }
-                UUID productId = detail.getProduct().getId();
-                EmployeeProductSummaryResponse existing = productMap.get(productId);
+                if (isCurrent) currentMonthEarnings = currentMonthEarnings.add(earning);
+
+                EmployeeProductSummaryResponse existing = workMap.get(work);
                 if (existing == null) {
-                    productMap.put(productId, EmployeeProductSummaryResponse.builder().productId(productId).productName(detail.getProductNameSnapshot()).quantity(detail.getQuantity()).earnings(earning).build());
+                    workMap.put(work, EmployeeProductSummaryResponse.builder().productName(work).quantity(detail.getQuantity()).earnings(earning).build());
                 } else {
                     existing.setQuantity(existing.getQuantity() + detail.getQuantity());
                     existing.setEarnings(existing.getEarnings().add(earning));
                 }
-                history.add(EmployeeProductionHistoryResponse.builder().productionDate(entry.getProductionDate()).productId(productId).productName(detail.getProductNameSnapshot()).quantity(detail.getQuantity()).rate(rate).earnings(earning).build());
+
+                history.add(EmployeeProductionHistoryResponse.builder().productionDate(entry.getProductionDate()).productName(work).quantity(detail.getQuantity()).rate(rate).earnings(earning).build());
+
+                if (isCurrent) {
+                    EmployeeCurrentMonthProductResponse c = currentMonthMap.get(work);
+                    if (c == null) {
+                        currentMonthMap.put(work, EmployeeCurrentMonthProductResponse.builder().productName(work).quantity(detail.getQuantity()).earnings(earning).build());
+                    } else {
+                        c.setQuantity(c.getQuantity() + detail.getQuantity());
+                        c.setEarnings(c.getEarnings().add(earning));
+                    }
+                }
             }
         }
 
@@ -158,34 +229,26 @@ public class EmployeeService {
         history.sort(Comparator.comparing(EmployeeProductionHistoryResponse::getProductionDate,
                 Comparator.nullsLast(Comparator.reverseOrder())));
 
-        List<EmployeeCurrentMonthProductResponse> currentMonthProductSummary = entries.stream()
-                        .filter(entry -> YearMonth.from(entry.getProductionDate()).equals(currentMonth))
-                        .flatMap(entry -> entry.getDetails().stream())
-                        .collect(Collectors.groupingBy(detail -> detail.getProduct().getId()))
-                        .values()
-                        .stream()
-                        .map(details -> {
-                            ProductionEntryDetail first = details.get(0);
-                            int quantity = details.stream().mapToInt(ProductionEntryDetail::getQuantity).sum();
-                            BigDecimal earnings = details.stream().map(detail -> detail.getAmountSnapshot() == null ? BigDecimal.ZERO : detail.getAmountSnapshot()).reduce(BigDecimal.ZERO, BigDecimal::add);
-                            return EmployeeCurrentMonthProductResponse.builder().productId(first.getProduct().getId()).productName(first.getProductNameSnapshot()).quantity(quantity).earnings(earnings).build();
-                        })
-                        .toList();
-
         EmployeeSummaryResponse summary = EmployeeSummaryResponse.builder()
                 .totalProductionQty(totalQty)
                 .totalEarnings(totalEarnings)
                 .currentMonthEarnings(currentMonthEarnings)
-                .productsWorkedOn(productMap.size())
+                .productsWorkedOn(workMap.size())
                 .build();
 
         return EmployeeDetailsResponse.builder()
                 .employee(map(employee)).summary(summary)
-                .productSummary(new ArrayList<>(productMap.values()))
-                .currentMonthProductSummary(currentMonthProductSummary)
+                .productSummary(new ArrayList<>(workMap.values()))
+                .currentMonthProductSummary(new ArrayList<>(currentMonthMap.values()))
                 .productionHistory(history)
                 .build();
 
+    }
+
+    // Label a piece-work line by its task; fall back to any legacy product name.
+    private String workLabel(ProductionEntryDetail d) {
+        if (d.getWork() != null && !d.getWork().isBlank()) return d.getWork();
+        return d.getProductNameSnapshot() != null ? d.getProductNameSnapshot() : "—";
     }
 
     @Transactional(readOnly = true)
