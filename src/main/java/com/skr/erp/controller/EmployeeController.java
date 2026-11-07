@@ -3,7 +3,10 @@ package com.skr.erp.controller;
 import com.skr.erp.common.response.CommonResponse;
 import com.skr.erp.dto.request.CreateEmployeeRequest;
 import com.skr.erp.dto.request.MarkAttendanceRequest;
+import com.skr.erp.dto.request.BulkAdvanceRequest;
 import com.skr.erp.dto.request.MarkAttendanceRangeRequest;
+import com.skr.erp.dto.request.PayrollQuery;
+import com.skr.erp.dto.request.RecordLedgerRequest;
 import com.skr.erp.dto.request.UpdateEmployeeRequest;
 import com.skr.erp.dto.request.UpdateEmployeeStatusRequest;
 import com.skr.erp.dto.response.AttendanceResponse;
@@ -11,7 +14,10 @@ import com.skr.erp.dto.response.EmployeeCalendarResponse;
 import com.skr.erp.dto.response.EmployeeDetailsResponse;
 import com.skr.erp.dto.response.EmployeeResponse;
 import com.skr.erp.dto.response.EmployeeStatsResponse;
+import com.skr.erp.dto.response.LedgerSummaryResponse;
+import com.skr.erp.dto.response.PayrollResponse;
 import com.skr.erp.report.ReportDownload;
+import com.skr.erp.service.EmployeeLedgerService;
 import com.skr.erp.service.EmployeeService;
 import com.skr.erp.service.ReportService;
 import jakarta.validation.Valid;
@@ -31,6 +37,7 @@ public class EmployeeController {
 
     private final EmployeeService employeeService;
     private final ReportService reportService;
+    private final EmployeeLedgerService employeeLedgerService;
 
     @PostMapping
     public CommonResponse<EmployeeResponse> create(@Valid @RequestBody CreateEmployeeRequest request) {
@@ -131,6 +138,44 @@ public class EmployeeController {
                                               @RequestParam LocalDate fromDate, @RequestParam LocalDate toDate) {
         return ReportDownload.excel(reportService.employeeExcel(id, fromDate, toDate),
                 "employee_" + reportService.fileToken(fromDate, toDate) + ".xlsx");
+    }
+
+    // ── Payroll: monthly pay-slips + advances/settlements + net pending (paged/filtered) ──
+    @GetMapping("/{id}/payroll")
+    public CommonResponse<PayrollResponse> getPayroll(@PathVariable UUID id, PayrollQuery query) {
+        return CommonResponse.<PayrollResponse>builder().success(true)
+                .message("Payroll fetched successfully")
+                .data(employeeLedgerService.getPayroll(id, query)).build();
+    }
+
+    @PostMapping("/{id}/ledger")
+    public CommonResponse<PayrollResponse> recordLedger(@PathVariable UUID id, @Valid @RequestBody RecordLedgerRequest request) {
+        return CommonResponse.<PayrollResponse>builder().success(true)
+                .message("Transaction recorded")
+                .data(employeeLedgerService.recordEntry(id, request)).build();
+    }
+
+    @DeleteMapping("/{id}/ledger/{entryId}")
+    public CommonResponse<PayrollResponse> deleteLedger(@PathVariable UUID id, @PathVariable UUID entryId) {
+        return CommonResponse.<PayrollResponse>builder().success(true)
+                .message("Transaction removed")
+                .data(employeeLedgerService.deleteEntry(id, entryId)).build();
+    }
+
+    // Give an advance to several employees at once (bulk screen).
+    @PostMapping("/advances/bulk")
+    public CommonResponse<Integer> bulkAdvance(@Valid @RequestBody BulkAdvanceRequest request) {
+        return CommonResponse.<Integer>builder().success(true)
+                .message("Advances recorded")
+                .data(employeeLedgerService.bulkAdvance(request)).build();
+    }
+
+    // Legacy ledger summary, still used by the current card until the new payroll UI ships.
+    @GetMapping("/{id}/ledger")
+    public CommonResponse<LedgerSummaryResponse> getLedger(@PathVariable UUID id) {
+        return CommonResponse.<LedgerSummaryResponse>builder().success(true)
+                .message("Ledger fetched successfully")
+                .data(employeeLedgerService.getLedger(id)).build();
     }
 
     @GetMapping("/{employeeId}/calendar")

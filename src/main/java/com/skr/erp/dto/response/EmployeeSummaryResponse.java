@@ -13,4 +13,5 @@ public class EmployeeSummaryResponse {
     private BigDecimal totalEarnings;
     private BigDecimal currentMonthEarnings;
     private Integer productsWorkedOn;
+    private Double currentMonthLeaveDays;
 }

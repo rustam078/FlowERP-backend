@@ -36,6 +36,7 @@ public class EmployeeService {
     private final ProductionEntryRepository productionEntryRepository;
     private final ProductionEntryDetailRepository productionEntryDetailRepository;
     private final ProductRateRepository productRateRepository;
+    private final EmployeeLedgerService employeeLedgerService;
 
     public EmployeeResponse create(CreateEmployeeRequest request) {
         employeeRepository.findByEmail(request.getEmail()).ifPresent(emp -> {
@@ -62,11 +63,16 @@ public class EmployeeService {
         YearMonth ym = YearMonth.now();
         Map<UUID, BigDecimal> totalByEmp = toEarningMap(productionEntryDetailRepository.sumEarningGroupedByEmployee());
         Map<UUID, BigDecimal> monthByEmp = toEarningMap(productionEntryDetailRepository.sumEarningGroupedByEmployeeBetween(ym.atDay(1), ym.atEndOfMonth()));
-        return employeeRepository.findAll().stream()
-                .map(e -> toResponse(e,
-                        monthByEmp.getOrDefault(e.getId(), BigDecimal.ZERO),
-                        totalByEmp.getOrDefault(e.getId(), BigDecimal.ZERO)))
-                .toList();
+        return employeeRepository.findAll().stream().map(e -> {
+            boolean monthly = e.getPaymentType() == PaymentType.MONTHLY;
+            BigDecimal month = monthly ? employeeLedgerService.currentMonthSalaryPayable(e) : monthByEmp.getOrDefault(e.getId(), BigDecimal.ZERO);
+            BigDecimal accrued = monthly ? employeeLedgerService.totalAccruedSalary(e) : totalByEmp.getOrDefault(e.getId(), BigDecimal.ZERO);
+            return toResponse(e, computeEarnings(e, month, accrued));
+        }).toList();
+    }
+
+    private BigDecimal nz(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
     }
 
     private Map<UUID, BigDecimal> toEarningMap(List<Object[]> rows) {
@@ -77,15 +83,27 @@ public class EmployeeService {
         return m;
     }
 
-    // Single-employee earnings via indexed SUM queries (no full-table scan).
+    // Single-employee earnings: monthly → salary; piece-rate → piece sums.
     private EmployeeResponse map(Employee employee) {
+        boolean monthly = employee.getPaymentType() == PaymentType.MONTHLY;
         YearMonth ym = YearMonth.now();
-        BigDecimal month = productionEntryDetailRepository.sumEarningByEmployeeBetween(employee.getId(), ym.atDay(1), ym.atEndOfMonth());
-        BigDecimal total = productionEntryDetailRepository.sumEarningByEmployee(employee.getId());
-        return toResponse(employee, month, total);
+        BigDecimal month = monthly ? employeeLedgerService.currentMonthSalaryPayable(employee)
+                : productionEntryDetailRepository.sumEarningByEmployeeBetween(employee.getId(), ym.atDay(1), ym.atEndOfMonth());
+        BigDecimal accrued = monthly ? employeeLedgerService.totalAccruedSalary(employee)
+                : productionEntryDetailRepository.sumEarningByEmployee(employee.getId());
+        return toResponse(employee, computeEarnings(employee, month, accrued));
     }
 
-    private EmployeeResponse toResponse(Employee employee, BigDecimal currentMonthEarning, BigDecimal totalEarning) {
+    private record Earnings(BigDecimal currentMonth, BigDecimal overall, BigDecimal pending, BigDecimal advanceBalance) {}
+
+    // Overall earning = money given (advance + expense + payment); pending = earned − given (0 floor).
+    private Earnings computeEarnings(Employee employee, BigDecimal currentMonth, BigDecimal accrued) {
+        EmployeeLedgerService.PayrollTotals totals = employeeLedgerService.payrollTotals(employee.getId(), employee.getOpeningAdvance());
+        BigDecimal pending = nz(accrued).subtract(totals.moneyGiven()).max(BigDecimal.ZERO);
+        return new Earnings(currentMonth, totals.moneyGiven(), pending, totals.advanceBalance());
+    }
+
+    private EmployeeResponse toResponse(Employee employee, Earnings earnings) {
         return EmployeeResponse.builder()
                 .id(employee.getId())
                 .employeeCode(employee.getEmployeeCode())
@@ -98,8 +116,10 @@ public class EmployeeService {
                 .paymentType(employee.getPaymentType())
                 .monthlySalary(employee.getMonthlySalary())
                 .openingAdvance(employee.getOpeningAdvance())
-                .currentMonthEarning(currentMonthEarning)
-                .totalEarning(totalEarning)
+                .currentMonthEarning(earnings.currentMonth())
+                .totalEarning(earnings.overall())
+                .advanceBalance(earnings.advanceBalance())
+                .pending(earnings.pending())
                 .build();
     }
 
@@ -125,7 +145,8 @@ public class EmployeeService {
         employee.setActive(request.getActive());
         if (request.getPaymentType() != null) employee.setPaymentType(request.getPaymentType());
         employee.setMonthlySalary(request.getMonthlySalary());
-        employee.setOpeningAdvance(request.getOpeningAdvance());
+        // Opening advance is read-only on edit; keep the existing value when not supplied.
+        if (request.getOpeningAdvance() != null) employee.setOpeningAdvance(request.getOpeningAdvance());
         employee = employeeRepository.save(employee);
         return map(employee);
     }
@@ -229,11 +250,22 @@ public class EmployeeService {
         history.sort(Comparator.comparing(EmployeeProductionHistoryResponse::getProductionDate,
                 Comparator.nullsLast(Comparator.reverseOrder())));
 
+        YearMonth ym = YearMonth.now();
+        double leaveDays = employeeAttendanceRepository
+                .findByEmployeeIdAndDateBetween(employeeId, ym.atDay(1), ym.atEndOfMonth())
+                .stream().mapToDouble(a -> a.getStatus() == com.skr.erp.common.constants.AttendanceStatus.HALF_DAY ? 0.5 : 1.0).sum();
+
+        // Monthly employees earn salary (accrued), not piece amounts.
+        boolean monthly = employee.getPaymentType() == PaymentType.MONTHLY;
+        BigDecimal totalEarned = monthly ? employeeLedgerService.totalAccruedSalary(employee) : totalEarnings;
+        BigDecimal currentEarned = monthly ? employeeLedgerService.currentMonthSalaryPayable(employee) : currentMonthEarnings;
+
         EmployeeSummaryResponse summary = EmployeeSummaryResponse.builder()
                 .totalProductionQty(totalQty)
-                .totalEarnings(totalEarnings)
-                .currentMonthEarnings(currentMonthEarnings)
+                .totalEarnings(totalEarned)
+                .currentMonthEarnings(currentEarned)
                 .productsWorkedOn(workMap.size())
+                .currentMonthLeaveDays(leaveDays)
                 .build();
 
         return EmployeeDetailsResponse.builder()
@@ -259,7 +291,9 @@ public class EmployeeService {
         Long inactiveEmployees = totalEmployees - activeEmployees;
         YearMonth currentMonth = YearMonth.now();
         BigDecimal currentMonthTotal = productionEntryDetailRepository.sumAllEarningBetween(currentMonth.atDay(1), currentMonth.atEndOfMonth());
-        BigDecimal overallTotal = productionEntryDetailRepository.sumAllEarning();
+        // Overall payroll = all money given to employees (advances + expenses + payments + opening advances).
+        BigDecimal openingAll = employees.stream().map(e -> nz(e.getOpeningAdvance())).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal overallTotal = employeeLedgerService.totalMoneyGivenAll().add(openingAll);
 
         return EmployeeStatsResponse.builder()
                 .totalEmployees(totalEmployees)

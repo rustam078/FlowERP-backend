@@ -22,6 +22,8 @@ public class EmployeeResponse {
     private BigDecimal monthlySalary;
     private BigDecimal openingAdvance;
     private BigDecimal currentMonthEarning;
-    private BigDecimal totalEarning;
+    private BigDecimal totalEarning;     // total money given = advance + expense + payment
+    private BigDecimal advanceBalance;   // current unsettled advance in the employee's wallet
+    private BigDecimal pending;          // still owed to the employee (0 when nothing pending)
 
 }
