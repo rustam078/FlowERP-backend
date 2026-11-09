@@ -53,8 +53,9 @@ public class EmployeeService {
         employee.setActive(true);
         employee.setPaymentType(request.getPaymentType() != null ? request.getPaymentType() : PaymentType.PIECE_RATE);
         employee.setMonthlySalary(request.getMonthlySalary());
-        employee.setOpeningAdvance(request.getOpeningAdvance());
         employee = employeeRepository.save(employee);
+        // Opening advance is recorded as the first advance ledger entry (sets the running balance).
+        employeeLedgerService.seedOpeningAdvance(employee, request.getOpeningAdvance(), request.getJoiningDate());
         return map(employee);
     }
 
@@ -63,11 +64,13 @@ public class EmployeeService {
         YearMonth ym = YearMonth.now();
         Map<UUID, BigDecimal> totalByEmp = toEarningMap(productionEntryDetailRepository.sumEarningGroupedByEmployee());
         Map<UUID, BigDecimal> monthByEmp = toEarningMap(productionEntryDetailRepository.sumEarningGroupedByEmployeeBetween(ym.atDay(1), ym.atEndOfMonth()));
+        Map<UUID, BigDecimal> givenByEmp = employeeLedgerService.moneyGivenGrouped();
         return employeeRepository.findAll().stream().map(e -> {
             boolean monthly = e.getPaymentType() == PaymentType.MONTHLY;
             BigDecimal month = monthly ? employeeLedgerService.currentMonthSalaryPayable(e) : monthByEmp.getOrDefault(e.getId(), BigDecimal.ZERO);
             BigDecimal accrued = monthly ? employeeLedgerService.totalAccruedSalary(e) : totalByEmp.getOrDefault(e.getId(), BigDecimal.ZERO);
-            return toResponse(e, computeEarnings(e, month, accrued));
+            BigDecimal moneyGiven = givenByEmp.getOrDefault(e.getId(), BigDecimal.ZERO);
+            return toResponse(e, computeEarnings(e, month, accrued, moneyGiven));
         }).toList();
     }
 
@@ -91,16 +94,15 @@ public class EmployeeService {
                 : productionEntryDetailRepository.sumEarningByEmployeeBetween(employee.getId(), ym.atDay(1), ym.atEndOfMonth());
         BigDecimal accrued = monthly ? employeeLedgerService.totalAccruedSalary(employee)
                 : productionEntryDetailRepository.sumEarningByEmployee(employee.getId());
-        return toResponse(employee, computeEarnings(employee, month, accrued));
+        return toResponse(employee, computeEarnings(employee, month, accrued, employeeLedgerService.moneyGivenForEmployee(employee)));
     }
 
     private record Earnings(BigDecimal currentMonth, BigDecimal overall, BigDecimal pending, BigDecimal advanceBalance) {}
 
-    // Overall earning = money given (advance + expense + payment); pending = earned − given (0 floor).
-    private Earnings computeEarnings(Employee employee, BigDecimal currentMonth, BigDecimal accrued) {
-        EmployeeLedgerService.PayrollTotals totals = employeeLedgerService.payrollTotals(employee.getId(), employee.getOpeningAdvance());
-        BigDecimal pending = nz(accrued).subtract(totals.moneyGiven()).max(BigDecimal.ZERO);
-        return new Earnings(currentMonth, totals.moneyGiven(), pending, totals.advanceBalance());
+    // Overall earning = money given; pending = earned − given (0 floor); balance from the employee column.
+    private Earnings computeEarnings(Employee employee, BigDecimal currentMonth, BigDecimal accrued, BigDecimal moneyGiven) {
+        BigDecimal pending = nz(accrued).subtract(nz(moneyGiven)).max(BigDecimal.ZERO);
+        return new Earnings(currentMonth, nz(moneyGiven), pending, nz(employee.getAdvanceBalance()));
     }
 
     private EmployeeResponse toResponse(Employee employee, Earnings earnings) {
@@ -115,7 +117,6 @@ public class EmployeeService {
                 .active(employee.getActive())
                 .paymentType(employee.getPaymentType())
                 .monthlySalary(employee.getMonthlySalary())
-                .openingAdvance(employee.getOpeningAdvance())
                 .currentMonthEarning(earnings.currentMonth())
                 .totalEarning(earnings.overall())
                 .advanceBalance(earnings.advanceBalance())
@@ -145,8 +146,6 @@ public class EmployeeService {
         employee.setActive(request.getActive());
         if (request.getPaymentType() != null) employee.setPaymentType(request.getPaymentType());
         employee.setMonthlySalary(request.getMonthlySalary());
-        // Opening advance is read-only on edit; keep the existing value when not supplied.
-        if (request.getOpeningAdvance() != null) employee.setOpeningAdvance(request.getOpeningAdvance());
         employee = employeeRepository.save(employee);
         return map(employee);
     }
@@ -291,9 +290,8 @@ public class EmployeeService {
         Long inactiveEmployees = totalEmployees - activeEmployees;
         YearMonth currentMonth = YearMonth.now();
         BigDecimal currentMonthTotal = productionEntryDetailRepository.sumAllEarningBetween(currentMonth.atDay(1), currentMonth.atEndOfMonth());
-        // Overall payroll = all money given to employees (advances + expenses + payments + opening advances).
-        BigDecimal openingAll = employees.stream().map(e -> nz(e.getOpeningAdvance())).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal overallTotal = employeeLedgerService.totalMoneyGivenAll().add(openingAll);
+        // Overall payroll = all money given to employees (advances + expenses + payments).
+        BigDecimal overallTotal = employeeLedgerService.totalMoneyGivenAll();
 
         return EmployeeStatsResponse.builder()
                 .totalEmployees(totalEmployees)

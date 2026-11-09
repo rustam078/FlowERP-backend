@@ -21,4 +21,10 @@ public interface EmployeeLedgerRepository extends JpaRepository<EmployeeLedger, 
     // Global sum across all employees for the given entry types (used by the overall payroll KPI).
     @Query("SELECT COALESCE(SUM(l.amount), 0) FROM EmployeeLedger l WHERE l.type IN :types")
     BigDecimal sumByTypes(@Param("types") java.util.List<LedgerEntryType> types);
+
+    // Money given (advance + expense + direct payment) grouped by employee — for the scalable list.
+    @Query("SELECT l.employee.id, SUM(CASE WHEN l.type IN (com.skr.erp.common.constants.LedgerEntryType.ADVANCE, "
+            + "com.skr.erp.common.constants.LedgerEntryType.SPEND, com.skr.erp.common.constants.LedgerEntryType.PAYOUT) "
+            + "THEN l.amount ELSE 0 END) FROM EmployeeLedger l GROUP BY l.employee.id")
+    java.util.List<Object[]> sumMoneyGivenGroupedByEmployee();
 }

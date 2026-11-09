@@ -18,8 +18,11 @@ public class PayrollResponse {
     private BigDecimal totalEarned;       // Σ slip earned (monthly) or piece total (piece-rate)
     private BigDecimal totalAdvanceGiven; // Σ advances ever given
     private BigDecimal advanceBalance;    // advance not yet applied to any slip
-    private BigDecimal totalPaid;         // Σ settlement payouts
+    private BigDecimal totalPaid;         // Σ direct salary payments (payouts)
+    private BigDecimal advanceAdjusted;   // Σ salary settled from advance
+    private BigDecimal currentMonthAccrued; // salary accrued so far this month (day-by-day)
     private BigDecimal pending;           // earned − advances − payouts (negative = paid ahead)
+    private BigDecimal pendingSettlement; // unsettled completed-month dues (monthly) / outstanding piece total
     private double leaveDaysThisMonth;
     private List<PaySlipResponse> slips;          // one page; empty for piece-rate
     private long slipTotal;

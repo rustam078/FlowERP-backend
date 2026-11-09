@@ -19,6 +19,7 @@ import com.skr.erp.dto.response.PayrollResponse;
 import com.skr.erp.report.ReportDownload;
 import com.skr.erp.service.EmployeeLedgerService;
 import com.skr.erp.service.EmployeeService;
+import com.skr.erp.service.PayslipService;
 import com.skr.erp.service.ReportService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +39,7 @@ public class EmployeeController {
     private final EmployeeService employeeService;
     private final ReportService reportService;
     private final EmployeeLedgerService employeeLedgerService;
+    private final PayslipService payslipService;
 
     @PostMapping
     public CommonResponse<EmployeeResponse> create(@Valid @RequestBody CreateEmployeeRequest request) {
@@ -146,6 +148,17 @@ public class EmployeeController {
         return CommonResponse.<PayrollResponse>builder().success(true)
                 .message("Payroll fetched successfully")
                 .data(employeeLedgerService.getPayroll(id, query)).build();
+    }
+
+    // Pay-slip PDF: by month (monthly staff) or by settlement entry (piece-rate staff).
+    @GetMapping("/{id}/payslip")
+    public ResponseEntity<byte[]> payslip(@PathVariable UUID id,
+            @RequestParam(required = false) LocalDate period,
+            @RequestParam(required = false) UUID ledgerId) {
+        byte[] pdf = ledgerId != null
+                ? payslipService.settlementPayslip(id, ledgerId)
+                : payslipService.monthlyPayslip(id, period);
+        return ReportDownload.pdf(pdf, "payslip.pdf");
     }
 
     @PostMapping("/{id}/ledger")

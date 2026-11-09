@@ -49,7 +49,8 @@ public class Employee extends BaseEntity {
     @Column(name = "monthly_salary", precision = 12, scale = 2)
     private BigDecimal monthlySalary;
 
-    // Advance paid at onboarding (recovered later from earnings; seeds the payroll ledger).
-    @Column(name = "opening_advance", precision = 12, scale = 2)
-    private BigDecimal openingAdvance;
+    // Running advance balance, maintained on each ledger write (O(1) read — no full-ledger scan).
+    // Opening advance is recorded as the first ADVANCE ledger entry — no separate column.
+    @Column(name = "advance_balance", nullable = false, precision = 18, scale = 2)
+    private BigDecimal advanceBalance = BigDecimal.ZERO;
 }

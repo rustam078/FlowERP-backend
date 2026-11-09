@@ -22,4 +22,5 @@ public class PaySlipResponse {
     private BigDecimal due;          // earned − paid
     private String status;           // UNPAID | PARTIAL | PAID
     private boolean current;         // in-progress month (accruing)
+    private boolean payable;         // past month with a balance due (current/future are not payable)
 }
