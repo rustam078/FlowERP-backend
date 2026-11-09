@@ -39,6 +39,7 @@ public class InvestmentService {
     private final InvestmentItemRepository investmentItemRepository;
     private final VendorRepository vendorRepository;
     private final ProductRepository productRepository;
+    private final ProductMaterialCostRepository productMaterialCostRepository;
     private final InventoryService inventoryService;
     private final InvestmentPaymentRepository investmentPaymentRepository;
     private final SystemSettingRepository systemSettingRepository;
@@ -230,7 +231,7 @@ public class InvestmentService {
         Product product = productRepository.findByNameIgnoreCase(request.getItemName()).orElse(null);
         if (product != null) {
             updateProductSource(product);
-            return product;
+            return product; // existing product: never touch its base price / pricing history
         }
 
         product = new Product();
@@ -239,7 +240,26 @@ public class InvestmentService {
         product.setIconName(null);
         product.setActive(true);
         product.setSource(ProductSource.PURCHASED);
-        return productRepository.save(product);
+        product = productRepository.save(product);
+        // New product only: seed base cost (purchase rate) + base selling (MRP) into pricing history.
+        seedProductPricing(product, request.getRate(), request.getSellingPrice());
+        return product;
+    }
+
+    // Distinct past material names — powers the Item Name type-to-suggest list for Material rows.
+    public List<String> materialNames() {
+        return investmentItemRepository.findDistinctItemNamesByType(InvestmentItemType.MATERIAL);
+    }
+
+    // First pricing row for a brand-new product = its base cost + base selling price.
+    private void seedProductPricing(Product product, BigDecimal cost, BigDecimal salePrice) {
+        if (cost == null) return;
+        ProductMaterialCost pricing = new ProductMaterialCost();
+        pricing.setProduct(product);
+        pricing.setCost(cost);
+        pricing.setSalePrice(salePrice);
+        pricing.setEffectiveFrom(LocalDate.now());
+        productMaterialCostRepository.save(pricing);
     }
 
     private void updateProductSource(Product product) {

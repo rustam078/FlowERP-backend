@@ -45,6 +45,11 @@ public class ProductionService {
     private final ProductRepository productRepository;
     private final SystemSettingRepository systemSettingRepository;
 
+    // Distinct past work names — powers the Work field's type-to-suggest list.
+    public java.util.List<String> workNames() {
+        return productionEntryDetailRepository.findDistinctWorkNames();
+    }
+
     public ProductionResponse create(CreateProductionRequest request) {
         Employee employee = employeeRepository.findById(request.getEmployeeId())
                 .orElseThrow(() -> new BusinessException("Employee not found"));
@@ -209,15 +214,18 @@ public class ProductionService {
     private String fillProductionTemplate(String template, ProductionDetailsResponse d) {
         NumberFormat nf = NumberFormat.getNumberInstance(new Locale("en", "IN"));
 
+        String cur = setting("CURRENCY_SYMBOL", "₹");
         StringBuilder rows = new StringBuilder();
         if (d.getItems() != null) {
             for (ProductionItemResponse item : d.getItems()) {
+                // Work Name = the free-text work; fall back to the (optional) product link.
+                String workName = item.getWork() != null && !item.getWork().isBlank()
+                        ? item.getWork() : (item.getProductName() != null ? item.getProductName() : "-");
                 rows.append("<tr>")
-                        .append("<td>").append(esc(item.getProductName())).append("</td>")
-                        .append("<td>").append(esc(item.getWork() != null ? item.getWork() : "-"))
-                        .append("</td>").append("<td class=\"right\">").append(item.getQuantity() != null ? item.getQuantity() : 0).append("</td>")
-                        .append("<td class=\"right\">Rs. ").append(item.getRate() != null ? nf.format(item.getRate()) : "0").append("</td>")
-                        .append("<td class=\"right\">Rs. ").append(item.getAmount() != null ? nf.format(item.getAmount()) : "0").append("</td>")
+                        .append("<td>").append(esc(workName)).append("</td>")
+                        .append("<td class=\"right\">").append(item.getQuantity() != null ? item.getQuantity() : 0).append("</td>")
+                        .append("<td class=\"right\">").append(cur).append(" ").append(item.getRate() != null ? nf.format(item.getRate()) : "0").append("</td>")
+                        .append("<td class=\"right\">").append(cur).append(" ").append(item.getAmount() != null ? nf.format(item.getAmount()) : "0").append("</td>")
                         .append("</tr>");
             }
         }
@@ -229,11 +237,11 @@ public class ProductionService {
                 .replace("{{companyContact}}", esc(setting("COMPANY_CONTACT", "")))
                 .replace("{{companyGstin}}", esc(setting("COMPANY_GSTIN", "-")))
                 .replace("{{refId}}", esc(d.getId() != null ? d.getId().toString() : "-"))
-                .replace("{{productionDate}}", d.getProductionDate() != null ? d.getProductionDate().format(DateTimeFormatter.ofPattern("dd-MMM-yyyy")) : "-")
-                .replace("{{employeeName}}", esc(d.getEmployeeName())).replace("{{remarks}}", "")
-                .replace("{{productCount}}", String.valueOf(d.getProductCount() != null ? d.getProductCount() : 0))
+                .replace("{{workDate}}", d.getProductionDate() != null ? d.getProductionDate().format(DateTimeFormatter.ofPattern("dd-MMM-yyyy")) : "-")
+                .replace("{{employeeName}}", esc(d.getEmployeeName()))
+                .replace("{{totalWorkItems}}", String.valueOf(d.getProductCount() != null ? d.getProductCount() : 0))
                 .replace("{{totalQuantity}}", nf.format(d.getTotalQuantity() != null ? d.getTotalQuantity() : 0))
-                .replace("{{totalAmount}}", d.getTotalAmount() != null ? nf.format(d.getTotalAmount()) : "0")
+                .replace("{{totalAmount}}", cur + " " + (d.getTotalAmount() != null ? nf.format(d.getTotalAmount()) : "0"))
                 .replace("{{itemRows}}", rows.toString()).replace("{{generatedOn}}", generatedOn);
     }
 

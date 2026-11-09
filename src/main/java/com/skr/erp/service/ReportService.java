@@ -56,30 +56,64 @@ public class ReportService {
         return support.renderPdf(PRODUCTION_TEMPLATE, productionValues(ReportPeriod.of(from, to)));
     }
 
+    private static final DateTimeFormatter DAY_FULL = DateTimeFormatter.ofPattern("dd-MMM-yyyy");
+
     public byte[] productionExcel(LocalDate from, LocalDate to) {
         ReportPeriod p = ReportPeriod.of(from, to);
         Object[] t = productionDetailRepository.aggregateProductionBetween(p.from(), p.to()).get(0);
         List<String[]> summary = List.of(
                 new String[]{"Entries", support.num(asLong(t[0]))},
-                new String[]{"Total pieces", support.num(asLong(t[1]))},
-                new String[]{"Total payment", support.money(asBig(t[2]))});
+                new String[]{"Total Piece", support.num(asLong(t[1]))},
+                new String[]{"Total Payment", support.money(asBig(t[2]))});
         List<ReportSection> sections = List.of(
-                new ReportSection("By product", List.of("Product", "Pieces", "Payment"),
-                        rows3(productionDetailRepository.productionByProductBetween(p.from(), p.to()))),
-                new ReportSection("By employee", List.of("Employee", "Pieces", "Payment"),
-                        rows3(productionDetailRepository.topEmployeesBetween(p.from(), p.to(), TOP))));
-        return ReportExcelWriter.build(workbook("Production report", p, summary, sections));
+                new ReportSection("Work details",
+                        List.of("Work Date", "Employee Name", "Work Name", "Quantity", "Work Rate", "Amount"),
+                        workExcelRows(productionDetailRepository.workRowsBetween(p.from(), p.to()))));
+        return ReportExcelWriter.build(workbook("Work Report", p, summary, sections));
     }
 
     private Map<String, String> productionValues(ReportPeriod p) {
         Object[] t = productionDetailRepository.aggregateProductionBetween(p.from(), p.to()).get(0);
         Map<String, String> v = base(p);
-        v.put("totalEntries", support.num(asLong(t[0])));
+        v.put("entries", support.num(asLong(t[0])));
+        v.put("totalPiece", support.num(asLong(t[1])));
+        v.put("totalPayment", support.money(asBig(t[2])));
         v.put("totalQuantity", support.num(asLong(t[1])));
         v.put("totalAmount", support.money(asBig(t[2])));
-        v.put("productRows", htmlRows3(productionDetailRepository.productionByProductBetween(p.from(), p.to())));
-        v.put("employeeRows", htmlRows3(productionDetailRepository.topEmployeesBetween(p.from(), p.to(), TOP)));
+        v.put("workRows", htmlWorkRows(productionDetailRepository.workRowsBetween(p.from(), p.to())));
         return v;
+    }
+
+    // One HTML row per work line: Work Date, Employee, Work Name, Quantity, Work Rate, Amount.
+    private String htmlWorkRows(List<Object[]> rows) {
+        if (rows.isEmpty()) return emptyRow(6);
+        StringBuilder sb = new StringBuilder();
+        for (Object[] r : rows) {
+            sb.append("<tr><td>").append(r[0] == null ? DASH : ((LocalDate) r[0]).format(DAY_FULL)).append("</td>")
+                    .append("<td>").append(support.esc(str(r[1]))).append("</td>")
+                    .append("<td>").append(support.esc(workName(r[2], r[3]))).append("</td>")
+                    .append("<td class=\"num\">").append(support.num(asLong(r[4]))).append("</td>")
+                    .append("<td class=\"num\">").append(support.money(asBig(r[5]))).append("</td>")
+                    .append("<td class=\"num\">").append(support.money(asBig(r[6]))).append("</td></tr>");
+        }
+        return sb.toString();
+    }
+
+    private List<List<String>> workExcelRows(List<Object[]> rows) {
+        List<List<String>> out = new ArrayList<>();
+        for (Object[] r : rows) {
+            out.add(List.of(r[0] == null ? DASH : ((LocalDate) r[0]).format(DAY_FULL), str(r[1]),
+                    workName(r[2], r[3]), support.num(asLong(r[4])), support.money(asBig(r[5])), support.money(asBig(r[6]))));
+        }
+        return out;
+    }
+
+    // Work Name = the free-text work; fall back to the (optional) product link.
+    private String workName(Object work, Object product) {
+        String w = work == null ? "" : work.toString().trim();
+        if (!w.isEmpty()) return w;
+        String pr = product == null ? "" : product.toString().trim();
+        return pr.isEmpty() ? DASH : pr;
     }
 
     // ── Sales ───────────────────────────────────────────

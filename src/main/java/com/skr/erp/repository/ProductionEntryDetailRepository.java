@@ -16,6 +16,21 @@ public interface ProductionEntryDetailRepository extends JpaRepository<Productio
 
     boolean existsByPieceCodeId(UUID pieceCodeId);
 
+    // Distinct past work names — for the Work field's type-to-suggest list.
+    @Query("SELECT DISTINCT d.work FROM ProductionEntryDetail d WHERE d.work IS NOT NULL AND d.work <> '' ORDER BY d.work")
+    List<String> findDistinctWorkNames();
+
+    // Flat work rows for the date-range work report: date, employee, work, product, qty, rate, amount.
+    @Query("""
+            SELECT d.productionEntry.productionDate, d.productionEntry.employee.fullName,
+                   d.work, d.productNameSnapshot, d.quantity, d.rateSnapshot, d.amountSnapshot
+            FROM ProductionEntryDetail d
+            WHERE d.productionEntry.productionDate >= :from
+              AND d.productionEntry.productionDate <= :to
+            ORDER BY d.productionEntry.productionDate DESC, d.productionEntry.employee.fullName
+            """)
+    List<Object[]> workRowsBetween(@Param("from") LocalDate from, @Param("to") LocalDate to);
+
     @Query("""
             SELECT COUNT(DISTINCT d.productionEntry.id),
                    COALESCE(SUM(d.quantity), 0),

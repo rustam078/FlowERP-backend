@@ -19,6 +19,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -52,6 +53,14 @@ public class ProductionController {
                 .message("Production entries fetched successfully")
                 .data(productionService.search(fromDate, toDate, employeeId, productId, pageable))
                 .build();
+    }
+
+    // Distinct work names for the Work field's type-to-suggest list.
+    @GetMapping("/work-names")
+    public CommonResponse<List<String>> workNames() {
+        return CommonResponse.<List<String>>builder().success(true)
+                .message("Work names fetched successfully")
+                .data(productionService.workNames()).build();
     }
 
     @GetMapping("/stats")

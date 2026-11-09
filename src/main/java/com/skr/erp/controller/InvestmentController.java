@@ -62,6 +62,14 @@ public class InvestmentController {
                 .build();
     }
 
+    // Distinct past material names for the Item Name type-to-suggest list.
+    @GetMapping("/material-names")
+    public CommonResponse<List<String>> materialNames() {
+        return CommonResponse.<List<String>>builder().success(true)
+                .message("Material names fetched successfully")
+                .data(investmentService.materialNames()).build();
+    }
+
     @GetMapping("/{id}")
     public CommonResponse<InvestmentDetailsResponse> getById(@PathVariable UUID id) {
         return CommonResponse.<InvestmentDetailsResponse>builder().success(true)

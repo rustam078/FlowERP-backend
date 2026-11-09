@@ -78,6 +78,8 @@ public class PayslipService {
         v.put("settlementDate", settlementDate);
         v.put("employeeName", support.esc(e.getFullName()));
         v.put("employeeCode", support.esc(e.getEmployeeCode() == null ? "-" : e.getEmployeeCode()));
+        // Remaining (unadjusted) advance the employee still owes, shown right after the code.
+        v.put("remainingAdvance", support.money(e.getAdvanceBalance() == null ? BigDecimal.ZERO : e.getAdvanceBalance()));
         v.put("employeeType", e.getPaymentType() == PaymentType.MONTHLY ? "Monthly" : "Piece Rate");
         v.put("joiningDate", e.getJoiningDate() == null ? "-" : e.getJoiningDate().format(DAY));
         return v;
