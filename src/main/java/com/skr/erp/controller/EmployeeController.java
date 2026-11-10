@@ -75,7 +75,7 @@ public class EmployeeController {
 
     @PatchMapping("/{id}/status")
     public CommonResponse<String> updateStatus(@PathVariable UUID id, @RequestBody UpdateEmployeeStatusRequest request) {
-        employeeService.updateStatus(id, request.getActive());
+        employeeService.updateStatus(id, request.getActive(), request.getEffectiveDate());
         return CommonResponse.<String>builder().success(true)
                 .message("Employee status updated successfully")
                 .data("Success").build();

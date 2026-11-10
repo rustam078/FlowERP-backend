@@ -12,10 +12,12 @@ import com.skr.erp.dto.response.PaySlipResponse;
 import com.skr.erp.dto.response.PayrollResponse;
 import com.skr.erp.entity.Employee;
 import com.skr.erp.entity.EmployeeLedger;
+import com.skr.erp.entity.EmployeeWorkPeriod;
 import com.skr.erp.exception.BusinessException;
 import com.skr.erp.repository.EmployeeAttendanceRepository;
 import com.skr.erp.repository.EmployeeLedgerRepository;
 import com.skr.erp.repository.EmployeeRepository;
+import com.skr.erp.repository.EmployeeWorkPeriodRepository;
 import com.skr.erp.repository.ProductionEntryDetailRepository;
 import com.skr.erp.repository.SystemSettingRepository;
 import lombok.RequiredArgsConstructor;
@@ -46,6 +48,7 @@ public class EmployeeLedgerService {
     private final EmployeeLedgerRepository ledgerRepository;
     private final ProductionEntryDetailRepository productionEntryDetailRepository;
     private final EmployeeAttendanceRepository employeeAttendanceRepository;
+    private final EmployeeWorkPeriodRepository workPeriodRepository;
     private final SystemSettingRepository systemSettingRepository;
 
     private record MonthSalary(BigDecimal base, double leaveDays, BigDecimal leaveDeduction, BigDecimal earned) {}
@@ -282,11 +285,12 @@ public class EmployeeLedgerService {
     private SlipBuild buildSlips(Employee employee, List<EmployeeLedger> txns, BigDecimal pool) {
         YearMonth now = YearMonth.now();
         YearMonth ym = employee.getJoiningDate() != null ? YearMonth.from(employee.getJoiningDate()) : now;
+        List<EmployeeWorkPeriod> periods = workPeriodRepository.findByEmployeeIdOrderByStartDateAsc(employee.getId());
         List<PaySlipResponse> slips = new ArrayList<>();
         BigDecimal total = BigDecimal.ZERO;
         double leaveNow = 0;
         while (!ym.isAfter(now)) {
-            MonthSalary ms = salaryBreakdown(employee, ym);
+            MonthSalary ms = salaryBreakdown(employee, ym, periods);
             if (ms.earned().signum() > 0 || ym.equals(now)) {
                 boolean current = ym.equals(now);
                 // Current (in-progress) month gets no advance applied — only completed months auto-settle.
@@ -323,9 +327,10 @@ public class EmployeeLedgerService {
         if (pool.signum() <= 0) return;
         YearMonth now = YearMonth.now();
         YearMonth ym = employee.getJoiningDate() != null ? YearMonth.from(employee.getJoiningDate()) : now;
+        List<EmployeeWorkPeriod> periods = workPeriodRepository.findByEmployeeIdOrderByStartDateAsc(employee.getId());
         BigDecimal consumed = BigDecimal.ZERO;
         while (ym.isBefore(now) && pool.signum() > 0) {
-            MonthSalary ms = salaryBreakdown(employee, ym);
+            MonthSalary ms = salaryBreakdown(employee, ym, periods);
             BigDecimal due = ms.earned().subtract(paidForPeriod(txns, ym));
             if (due.signum() > 0) {
                 BigDecimal apply = due.min(pool);
@@ -374,8 +379,14 @@ public class EmployeeLedgerService {
         employeeRepository.save(employee);
     }
 
-    // Salary breakdown for a month: base (days employed × per-day), leave deduction, net earned.
+    // Convenience: load the employee's work spells, then compute the month's breakdown.
     private MonthSalary salaryBreakdown(Employee employee, YearMonth ym) {
+        return salaryBreakdown(employee, ym, workPeriodRepository.findByEmployeeIdOrderByStartDateAsc(employee.getId()));
+    }
+
+    // Salary breakdown for a month: base (days employed × per-day), leave deduction, net earned.
+    // Only days inside an employment spell count, so months after someone left earn nothing.
+    private MonthSalary salaryBreakdown(Employee employee, YearMonth ym, List<EmployeeWorkPeriod> periods) {
         BigDecimal basic = nz(employee.getMonthlySalary());
         BigDecimal zero = BigDecimal.ZERO;
         if (basic.signum() == 0) return new MonthSalary(zero, 0, zero, zero);
@@ -384,7 +395,8 @@ public class EmployeeLedgerService {
         LocalDate start = (join != null && join.isAfter(monthStart)) ? join : monthStart;
         LocalDate end = ym.equals(YearMonth.now()) && today.isBefore(monthEnd) ? today : monthEnd;
         if (start.isAfter(end)) return new MonthSalary(zero, 0, zero, zero);
-        long employedDays = ChronoUnit.DAYS.between(start, end) + 1;
+        long employedDays = employedDays(periods, start, end);
+        if (employedDays == 0) return new MonthSalary(zero, 0, zero, zero);
         double leaveDays = employeeAttendanceRepository.findByEmployeeIdAndDateBetween(employee.getId(), start, end)
                 .stream().mapToDouble(a -> a.getStatus() == AttendanceStatus.HALF_DAY ? 0.5 : 1.0).sum();
         BigDecimal perDay = basic.divide(BigDecimal.valueOf(ym.lengthOfMonth()), 2, RoundingMode.HALF_UP);
@@ -392,6 +404,21 @@ public class EmployeeLedgerService {
         BigDecimal base = perDay.multiply(BigDecimal.valueOf(employedDays)).setScale(0, RoundingMode.HALF_UP);
         BigDecimal leaveDeduction = perDay.multiply(BigDecimal.valueOf(leaveDays)).setScale(0, RoundingMode.HALF_UP);
         return new MonthSalary(base, leaveDays, leaveDeduction, base.subtract(leaveDeduction).max(zero));
+    }
+
+    // Days in [from,to] that fall inside any employment spell (spells never overlap, so sum is safe).
+    // No spells (legacy data) → the whole range counts, preserving the old behaviour.
+    private long employedDays(List<EmployeeWorkPeriod> periods, LocalDate from, LocalDate to) {
+        if (periods == null || periods.isEmpty()) return ChronoUnit.DAYS.between(from, to) + 1;
+        long days = 0;
+        for (EmployeeWorkPeriod p : periods) {
+            LocalDate ps = p.getStartDate();
+            LocalDate pe = p.getEndDate() != null ? p.getEndDate() : to;
+            LocalDate s = ps.isAfter(from) ? ps : from;
+            LocalDate e = pe.isBefore(to) ? pe : to;
+            if (!s.isAfter(e)) days += ChronoUnit.DAYS.between(s, e) + 1;
+        }
+        return days;
     }
 
     // This month's net earned salary — used by the employee list/detail current-month figure.
@@ -428,9 +455,10 @@ public class EmployeeLedgerService {
         }
         YearMonth now = YearMonth.now();
         YearMonth ym = employee.getJoiningDate() != null ? YearMonth.from(employee.getJoiningDate()) : now;
+        List<EmployeeWorkPeriod> periods = workPeriodRepository.findByEmployeeIdOrderByStartDateAsc(employee.getId());
         BigDecimal total = BigDecimal.ZERO;
         while (!ym.isAfter(now)) {
-            total = total.add(salaryBreakdown(employee, ym).earned());
+            total = total.add(salaryBreakdown(employee, ym, periods).earned());
             ym = ym.plusMonths(1);
         }
         return total;
