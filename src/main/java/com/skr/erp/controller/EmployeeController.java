@@ -16,6 +16,7 @@ import com.skr.erp.dto.response.EmployeeResponse;
 import com.skr.erp.dto.response.EmployeeStatsResponse;
 import com.skr.erp.dto.response.LedgerSummaryResponse;
 import com.skr.erp.dto.response.PayrollResponse;
+import com.skr.erp.dto.response.StatusWindowResponse;
 import com.skr.erp.report.ReportDownload;
 import com.skr.erp.service.EmployeeLedgerService;
 import com.skr.erp.service.EmployeeService;
@@ -79,6 +80,14 @@ public class EmployeeController {
         return CommonResponse.<String>builder().success(true)
                 .message("Employee status updated successfully")
                 .data("Success").build();
+    }
+
+    // Allowed date range for the next inactivate / reactivate (forward-only, no future dates).
+    @GetMapping("/{id}/status-window")
+    public CommonResponse<StatusWindowResponse> statusWindow(@PathVariable UUID id) {
+        return CommonResponse.<StatusWindowResponse>builder().success(true)
+                .message("Status window fetched successfully")
+                .data(employeeService.statusWindow(id)).build();
     }
 
     @GetMapping("/{id}/details")

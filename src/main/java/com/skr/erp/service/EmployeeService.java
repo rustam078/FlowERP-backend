@@ -1,5 +1,6 @@
 package com.skr.erp.service;
 
+import com.skr.erp.common.constants.AttendanceStatus;
 import com.skr.erp.dto.request.CreateEmployeeRequest;
 import com.skr.erp.dto.request.MarkAttendanceRequest;
 import com.skr.erp.dto.request.MarkAttendanceRangeRequest;
@@ -26,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.YearMonth;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -40,6 +42,9 @@ public class EmployeeService {
     private final ProductRateRepository productRateRepository;
     private final EmployeeWorkPeriodRepository workPeriodRepository;
     private final EmployeeLedgerService employeeLedgerService;
+    private final PayslipGenerationService payslips;
+
+    private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd-MMM-yyyy", Locale.ENGLISH);
 
     public EmployeeResponse create(CreateEmployeeRequest request) {
         employeeRepository.findByEmail(request.getEmail()).ifPresent(emp -> {
@@ -57,111 +62,101 @@ public class EmployeeService {
         employee.setPaymentType(request.getPaymentType() != null ? request.getPaymentType() : PaymentType.PIECE_RATE);
         employee.setMonthlySalary(request.getMonthlySalary());
         employee = employeeRepository.save(employee);
-        // Start the first employment spell so salary accrues from the joining date.
-//        openWorkPeriod(employee, request.getJoiningDate());
         // Opening advance is recorded as the first advance ledger entry (sets the running balance).
         employeeLedgerService.seedOpeningAdvance(employee, request.getOpeningAdvance(), request.getJoiningDate());
         return map(employee);
     }
 
-    // Open a new employment spell starting on the given date (defaults to today).
-    private void openWorkPeriod(Employee employee, LocalDate start) {
-        EmployeeWorkPeriod period = new EmployeeWorkPeriod();
-        period.setEmployee(employee);
-        period.setStartDate(start != null ? start : LocalDate.now());
-        workPeriodRepository.save(period);
-    }
-
-    // Reflect an active/inactive change on the employment spells so payroll stops / resumes:
-    // deactivating closes the open spell at the last working date; reactivating opens a new spell.
-//    private void applyActiveChange(Employee employee, Boolean active, LocalDate effectiveDate) {
-//        boolean wasActive = Boolean.TRUE.equals(employee.getActive());
-//        boolean nowActive = Boolean.TRUE.equals(active);
-//        LocalDate when = effectiveDate != null ? effectiveDate : LocalDate.now();
-//        if (wasActive && !nowActive) {
-//            workPeriodRepository.findByEmployeeIdAndEndDateIsNull(employee.getId())
-//                    .ifPresent(period -> {
-//                        period.setEndDate(when);
-//                        workPeriodRepository.save(period); });
-//        } else if (!wasActive && nowActive) {
-//            openWorkPeriod(employee, when);
-//        }
-//        employee.setActive(active);
-//    }
-
+    // Active ↔ inactive is recorded as inactive spells; a same-status request is a no-op.
     private void applyActiveChange(Employee employee, Boolean active, LocalDate effectiveDate) {
-
         boolean wasActive = Boolean.TRUE.equals(employee.getActive());
         boolean nowActive = Boolean.TRUE.equals(active);
-
-        if (wasActive == nowActive) {
-            return;
-        }
-
+        if (wasActive == nowActive) return;
         LocalDate when = effectiveDate != null ? effectiveDate : LocalDate.now();
-
-        if (nowActive) {
-            reactivateEmployee(employee, when);
-        } else {
-            deactivateEmployee(employee, when);
-        }
-
+        if (nowActive) reactivateEmployee(employee, when);
+        else deactivateEmployee(employee, when);
         employee.setActive(active);
     }
 
-    private void deactivateEmployee(Employee employee, LocalDate when) {
-        UUID employeeId = employee.getId();
-        if (workPeriodRepository.findByEmployeeIdAndEndDateIsNull(employeeId).isPresent()) {
-            throw new BusinessException("Employee already has an open inactive period.");
+    // Opens an inactive spell from the inactive date (first non-working day).
+    private void deactivateEmployee(Employee employee, LocalDate inactiveDate) {
+        StatusWindowResponse window = statusWindow(employee);
+        if (!"INACTIVATE".equals(window.getAction())) throw new BusinessException("Employee is already inactive");
+        validateStatusDate(window, inactiveDate, "Inactive date");
+        EmployeeWorkPeriod spell = new EmployeeWorkPeriod();
+        spell.setEmployee(employee);
+        spell.setStartDate(inactiveDate);
+        workPeriodRepository.save(spell);
+        payslips.refresh(employee, YearMonth.from(inactiveDate), YearMonth.now());
+    }
+
+    // Closes the open spell at the reactivation date (that day counts as a working day).
+    private void reactivateEmployee(Employee employee, LocalDate reactivationDate) {
+        EmployeeWorkPeriod spell = workPeriodRepository.findByEmployeeIdAndEndDateIsNull(employee.getId())
+                .orElseThrow(() -> new BusinessException("Employee is already active"));
+        validateStatusDate(statusWindow(employee), reactivationDate, "Reactivation date");
+        // Delete leave records during inactive period
+        employeeAttendanceRepository.deleteLeavesByEmployeeAndDateRange(employee.getId(), spell.getStartDate(), reactivationDate);
+        spell.setEndDate(reactivationDate);
+        workPeriodRepository.save(spell);
+        payslips.refresh(employee, YearMonth.from(reactivationDate), YearMonth.now());
+    }
+
+    /** Allowed date range for the employee's next status change (forward-only, never in the future). */
+    @Transactional(readOnly = true)
+    public StatusWindowResponse statusWindow(UUID employeeId) {
+        return statusWindow(employeeRepository.findById(employeeId)
+                .orElseThrow(() -> new BusinessException("Employee not found")));
+    }
+
+    // Next change must come strictly after the last status change (joining / reactivation / inactive
+    // date) and after the newest fully paid (locked) month.
+    private StatusWindowResponse statusWindow(Employee employee) {
+        UUID id = employee.getId();
+        Optional<EmployeeWorkPeriod> open = workPeriodRepository.findByEmployeeIdAndEndDateIsNull(id);
+        LocalDate lastChange = open.map(EmployeeWorkPeriod::getStartDate).orElseGet(() ->
+                workPeriodRepository.findTopByEmployeeIdAndEndDateIsNotNullOrderByEndDateDesc(id)
+                        .map(EmployeeWorkPeriod::getEndDate).orElse(employee.getJoiningDate()));
+        LocalDate afterChange = lastChange == null ? null : lastChange.plusDays(1);
+        return StatusWindowResponse.builder()
+                .action(open.isPresent() ? "REACTIVATE" : "INACTIVATE")
+                .minDate(later(afterChange, payslips.firstUnlockedDate(id)))
+                .maxDate(LocalDate.now()).build();
+    }
+
+    private void validateStatusDate(StatusWindowResponse window, LocalDate date, String label) {
+        if (date.isAfter(window.getMaxDate())) throw new BusinessException(label + " cannot be in the future");
+        if (window.getMinDate() != null && date.isBefore(window.getMinDate())) {
+            throw new BusinessException(label + " must be on or after " + window.getMinDate().format(DAY)
+                    + " (status changes are forward-only and paid months are locked)");
         }
-
-        Optional<EmployeeWorkPeriod> latestPeriod = workPeriodRepository.findTopByEmployeeIdAndEndDateIsNotNullOrderByEndDateDesc(employeeId);
-        validateInactiveDate(employee, when, latestPeriod);
-
-        EmployeeWorkPeriod period = new EmployeeWorkPeriod();
-        period.setEmployee(employee);
-        period.setStartDate(when);
-        period.setEndDate(null);
-
-        workPeriodRepository.save(period);
     }
 
-    private void reactivateEmployee(Employee employee, LocalDate when) {
-        EmployeeWorkPeriod period = workPeriodRepository.findByEmployeeIdAndEndDateIsNull(employee.getId())
-                .orElseThrow(() -> new BusinessException("No open inactive period found for this employee."));
-        validateActiveDate(period, when);
-        period.setEndDate(when);
-        workPeriodRepository.save(period);
+    private LocalDate later(LocalDate a, LocalDate b) {
+        if (a == null) return b;
+        if (b == null) return a;
+        return a.isAfter(b) ? a : b;
     }
-    private void validateInactiveDate(Employee employee, LocalDate inactiveDate, Optional<EmployeeWorkPeriod> latestPeriod) {
-
-        LocalDate minimumDate = latestPeriod
-                .map(EmployeeWorkPeriod::getEndDate)
-                .orElse(employee.getJoiningDate());
-
-        if (minimumDate != null && inactiveDate.isBefore(minimumDate)) {
-            throw new BusinessException("Inactive date cannot be before the last active date: " + minimumDate);
-        }
-    }
-
-    private void validateActiveDate(EmployeeWorkPeriod period, LocalDate activeDate) {
-        if (!activeDate.isAfter(period.getStartDate())) {
-            throw new BusinessException("Active date must be after the inactive date.");
-        }
-    }
+    // Employee list with earnings; monthly salary totals come from a fixed number of batched queries.
     @Transactional(readOnly = true)
     public List<EmployeeResponse> getAll() {
         YearMonth ym = YearMonth.now();
+        List<Employee> employees = employeeRepository.findAll();
         Map<UUID, BigDecimal> totalByEmp = toEarningMap(productionEntryDetailRepository.sumEarningGroupedByEmployee());
         Map<UUID, BigDecimal> monthByEmp = toEarningMap(productionEntryDetailRepository.sumEarningGroupedByEmployeeBetween(ym.atDay(1), ym.atEndOfMonth()));
         Map<UUID, BigDecimal> givenByEmp = employeeLedgerService.moneyGivenGrouped();
-        return employeeRepository.findAll().stream().map(e -> {
-            boolean monthly = e.getPaymentType() == PaymentType.MONTHLY;
-            BigDecimal month = monthly ? employeeLedgerService.currentMonthSalaryPayable(e) : monthByEmp.getOrDefault(e.getId(), BigDecimal.ZERO);
-            BigDecimal accrued = monthly ? employeeLedgerService.totalAccruedSalary(e) : totalByEmp.getOrDefault(e.getId(), BigDecimal.ZERO);
-            BigDecimal moneyGiven = givenByEmp.getOrDefault(e.getId(), BigDecimal.ZERO);
-            return toResponse(e, computeEarnings(e, month, accrued, moneyGiven));
+        Map<UUID, PayslipGenerationService.SalaryTotals> salary =
+                payslips.totalsFor(employees.stream().filter(this::isMonthly).toList());
+        return employees.stream().map(e -> {
+            PayslipGenerationService.SalaryTotals s = salary.get(e.getId());
+            BigDecimal month = s != null ? s.currentMonth() : monthByEmp.getOrDefault(e.getId(), BigDecimal.ZERO);
+            BigDecimal accrued = s != null ? s.totalEarned() : totalByEmp.getOrDefault(e.getId(), BigDecimal.ZERO);
+            return toResponse(e, computeEarnings(e, month, accrued, givenByEmp.getOrDefault(e.getId(), BigDecimal.ZERO)));
         }).toList();
+    }
+
+    private boolean isMonthly(Employee employee) {
+        return employee.getPaymentType() == PaymentType.MONTHLY;
     }
 
     private BigDecimal nz(BigDecimal value) {
@@ -178,12 +173,17 @@ public class EmployeeService {
 
     // Single-employee earnings: monthly → salary; piece-rate → piece sums.
     private EmployeeResponse map(Employee employee) {
-        boolean monthly = employee.getPaymentType() == PaymentType.MONTHLY;
-        YearMonth ym = YearMonth.now();
-        BigDecimal month = monthly ? employeeLedgerService.currentMonthSalaryPayable(employee)
-                : productionEntryDetailRepository.sumEarningByEmployeeBetween(employee.getId(), ym.atDay(1), ym.atEndOfMonth());
-        BigDecimal accrued = monthly ? employeeLedgerService.totalAccruedSalary(employee)
-                : productionEntryDetailRepository.sumEarningByEmployee(employee.getId());
+        BigDecimal month;
+        BigDecimal accrued;
+        if (isMonthly(employee)) {
+            PayslipGenerationService.SalaryTotals totals = payslips.totals(employee);
+            month = totals.currentMonth();
+            accrued = totals.totalEarned();
+        } else {
+            YearMonth ym = YearMonth.now();
+            month = productionEntryDetailRepository.sumEarningByEmployeeBetween(employee.getId(), ym.atDay(1), ym.atEndOfMonth());
+            accrued = productionEntryDetailRepository.sumEarningByEmployee(employee.getId());
+        }
         return toResponse(employee, computeEarnings(employee, month, accrued, employeeLedgerService.moneyGivenForEmployee(employee)));
     }
 
@@ -232,8 +232,13 @@ public class EmployeeService {
         employee.setMobileNumber(request.getMobileNumber());
         employee.setEmail(request.getEmail());
         employee.setAddress(request.getAddress());
-        employee.setJoiningDate(request.getJoiningDate());
-        // A status change from the edit form reconciles the work spells (effective today).
+        LocalDate joining = request.getJoiningDate();
+        if (joining != null && !joining.equals(employee.getJoiningDate())) {
+            // Saved months depend on the joining date: drop them so they regenerate (refused once paid).
+            payslips.resetSavedMonths(employee.getId());
+            employee.setJoiningDate(joining);
+        }
+        // A status change from the edit form reconciles the inactive spells (effective today).
         applyActiveChange(employee, request.getActive(), null);
         if (request.getPaymentType() != null) employee.setPaymentType(request.getPaymentType());
         employee.setMonthlySalary(request.getMonthlySalary());
@@ -256,46 +261,91 @@ public class EmployeeService {
 
 
     // ── Attendance (exception-based: only absent / half-day days are stored) ──
+//    @Transactional(readOnly = true)
+//    public List<AttendanceResponse> getAttendance(UUID employeeId, LocalDate from, LocalDate to) {
+//        return employeeAttendanceRepository.findByEmployeeIdAndDateBetween(employeeId, from, to).stream()
+//                .map(a -> AttendanceResponse.builder().date(a.getDate()).status(a.getStatus()).build())
+//                .toList();
+//    }
+
     @Transactional(readOnly = true)
     public List<AttendanceResponse> getAttendance(UUID employeeId, LocalDate from, LocalDate to) {
-        return employeeAttendanceRepository.findByEmployeeIdAndDateBetween(employeeId, from, to).stream()
-                .map(a -> AttendanceResponse.builder().date(a.getDate()).status(a.getStatus()).build())
-                .toList();
+
+        Map<LocalDate, AttendanceStatus> attendanceMap = employeeAttendanceRepository.findByEmployeeIdAndDateBetween(employeeId, from, to).stream().collect(Collectors.toMap(EmployeeAttendance::getDate, EmployeeAttendance::getStatus, (a, b) -> b));
+        List<EmployeeWorkPeriod> workPeriods = workPeriodRepository.findOverlappingPeriods(employeeId, from, to);
+        List<AttendanceResponse> response = new ArrayList<>();
+
+        for (LocalDate date = from; !date.isAfter(to); date = date.plusDays(1)) {
+            boolean inactive = false;
+            for (EmployeeWorkPeriod wp : workPeriods) {
+                if (!date.isBefore(wp.getStartDate()) && (wp.getEndDate() == null || date.isBefore(wp.getEndDate()))) {
+                    inactive = true;
+                    break;
+                }
+            }
+            AttendanceStatus attendanceStatus = attendanceMap.get(date);
+            if (inactive) {
+                response.add(AttendanceResponse.builder().date(date).status(AttendanceStatus.INACTIVE).build());
+            } else if (attendanceStatus != null) {
+                response.add(AttendanceResponse.builder().date(date).status(attendanceStatus).build());
+            }
+        }
+        return response;
     }
 
+
+    // Leave in a fully paid (locked) month is rejected; saved months are refreshed after the change.
     public AttendanceResponse markAttendance(UUID employeeId, MarkAttendanceRequest request) {
         Employee employee = employeeRepository.findById(employeeId).orElseThrow(() -> new BusinessException("Employee not found"));
-        EmployeeAttendance att = employeeAttendanceRepository.findByEmployeeIdAndDate(employeeId, request.getDate())
+        LocalDate date = request.getDate();
+        boolean isInactive = workPeriodRepository.existsInactivePeriodOverlap(employeeId, date,date);
+        if (isInactive) {
+            throw new RuntimeException("Leave cannot be applied during the employee's inactive period.");
+        }
+        payslips.assertMonthsOpen(employeeId, date, date);
+        EmployeeAttendance att = employeeAttendanceRepository.findByEmployeeIdAndDate(employeeId, date)
                 .orElseGet(EmployeeAttendance::new);
         att.setEmployee(employee);
-        att.setDate(request.getDate());
+        att.setDate(date);
         att.setStatus(request.getStatus());
         att = employeeAttendanceRepository.save(att);
+        payslips.refresh(employee, YearMonth.from(date), YearMonth.from(date));
         return AttendanceResponse.builder().date(att.getDate()).status(att.getStatus()).build();
     }
 
     public void clearAttendance(UUID employeeId, LocalDate date) {
+        Employee employee = employeeRepository.findById(employeeId).orElseThrow(() -> new BusinessException("Employee not found"));
+        payslips.assertMonthsOpen(employeeId, date, date);
         employeeAttendanceRepository.findByEmployeeIdAndDate(employeeId, date)
                 .ifPresent(employeeAttendanceRepository::delete);
+        payslips.refresh(employee, YearMonth.from(date), YearMonth.from(date));
     }
 
-    // Mark every day in an inclusive range with the same status (e.g. 10th–20th leave).
+    // Mark every day in an inclusive range with the same status (e.g. 10th–20th leave) in one batch.
     public List<AttendanceResponse> markAttendanceRange(UUID employeeId, MarkAttendanceRangeRequest request) {
-        if (request.getFromDate().isAfter(request.getToDate())) {
-            throw new BusinessException("From date cannot be after To date");
-        }
+        LocalDate from = request.getFromDate(), to = request.getToDate();
+        if (from.isAfter(to)) throw new BusinessException("From date cannot be after To date");
         Employee employee = employeeRepository.findById(employeeId).orElseThrow(() -> new BusinessException("Employee not found"));
-        List<AttendanceResponse> result = new ArrayList<>();
-        for (LocalDate d = request.getFromDate(); !d.isAfter(request.getToDate()); d = d.plusDays(1)) {
-            EmployeeAttendance att = employeeAttendanceRepository.findByEmployeeIdAndDate(employeeId, d)
-                    .orElseGet(EmployeeAttendance::new);
+        boolean isInactive = workPeriodRepository.existsInactivePeriodOverlap(employeeId, from,to);
+
+        if (isInactive) {
+            throw new RuntimeException("Leave cannot be applied during the employee's inactive period.");
+        }
+        payslips.assertMonthsOpen(employeeId, from, to);
+        Map<LocalDate, EmployeeAttendance> existing = employeeAttendanceRepository
+                .findByEmployeeIdAndDateBetween(employeeId, from, to).stream()
+                .collect(Collectors.toMap(EmployeeAttendance::getDate, a -> a));
+        List<EmployeeAttendance> rows = new ArrayList<>();
+        for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
+            EmployeeAttendance att = existing.getOrDefault(d, new EmployeeAttendance());
             att.setEmployee(employee);
             att.setDate(d);
             att.setStatus(request.getStatus());
-            att = employeeAttendanceRepository.save(att);
-            result.add(AttendanceResponse.builder().date(att.getDate()).status(att.getStatus()).build());
+            rows.add(att);
         }
-        return result;
+        employeeAttendanceRepository.saveAll(rows);
+        payslips.refresh(employee, YearMonth.from(from), YearMonth.from(to));
+        return rows.stream().map(a -> AttendanceResponse.builder().date(a.getDate()).status(a.getStatus()).build()).toList();
     }
 
     @Transactional(readOnly = true)
@@ -353,10 +403,10 @@ public class EmployeeService {
                 .findByEmployeeIdAndDateBetween(employeeId, ym.atDay(1), ym.atEndOfMonth())
                 .stream().mapToDouble(a -> a.getStatus() == com.skr.erp.common.constants.AttendanceStatus.HALF_DAY ? 0.5 : 1.0).sum();
 
-        // Monthly employees earn salary (accrued), not piece amounts.
-        boolean monthly = employee.getPaymentType() == PaymentType.MONTHLY;
-        BigDecimal totalEarned = monthly ? employeeLedgerService.totalAccruedSalary(employee) : totalEarnings;
-        BigDecimal currentEarned = monthly ? employeeLedgerService.currentMonthSalaryPayable(employee) : currentMonthEarnings;
+        // Monthly employees earn salary (saved months + live current month), not piece amounts.
+        PayslipGenerationService.SalaryTotals salary = isMonthly(employee) ? payslips.totals(employee) : null;
+        BigDecimal totalEarned = salary != null ? salary.totalEarned() : totalEarnings;
+        BigDecimal currentEarned = salary != null ? salary.currentMonth() : currentMonthEarnings;
 
         EmployeeSummaryResponse summary = EmployeeSummaryResponse.builder()
                 .totalProductionQty(totalQty)

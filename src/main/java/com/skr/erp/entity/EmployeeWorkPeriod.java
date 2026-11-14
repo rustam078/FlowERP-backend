@@ -6,8 +6,8 @@ import lombok.Setter;
 
 import java.time.LocalDate;
 
-// One continuous spell of employment. An open period (endDate null) means currently employed.
-// Deactivating closes the open period at the last working date; reactivating opens a new one.
+// One INACTIVE spell: startDate = inactive date (first non-working day), endDate = reactivation date
+// (a working day again). endDate stays null while the employee is still inactive.
 @Entity
 @Table(name = "employee_work_period")
 @Getter
@@ -21,7 +21,7 @@ public class EmployeeWorkPeriod extends BaseEntity {
     @Column(name = "start_date", nullable = false)
     private LocalDate startDate;
 
-    // Null while the employee is still working in this spell.
+    // Null while the employee is still inactive.
     @Column(name = "end_date")
     private LocalDate endDate;
 }

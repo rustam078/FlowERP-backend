@@ -5,15 +5,14 @@ import lombok.Data;
 import java.time.LocalDate;
 
 /**
- * Paging + filtering for the payroll card (slips and the transaction log are paged separately).
+ * Filters for the payroll card: the salary-slip year and the paged transaction log.
  */
 @Data
 public class PayrollQuery {
+    private Integer year;        // calendar year of the salary slips; null = current year
     private String txnType;      // ADVANCE | SPEND | SETTLEMENT | null (all)
     private LocalDate txnFrom;
     private LocalDate txnTo;
     private int txnPage;         // 0-based
     private int txnSize = 5;
-    private int slipPage;
-    private int slipSize = 10;
 }

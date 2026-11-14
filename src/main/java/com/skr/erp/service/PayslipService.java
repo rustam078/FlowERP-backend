@@ -37,6 +37,9 @@ public class PayslipService {
     public byte[] monthlyPayslip(UUID employeeId, LocalDate period) {
         Employee e = findEmployee(employeeId);
         PaySlipResponse slip = ledgerService.slipForMonth(employeeId, period);
+        if ("INACTIVE".equals(slip.getMonthStatus())) {
+            throw new BusinessException("No payslip for " + slip.getMonthLabel() + " — the employee was inactive all month");
+        }
         StringBuilder rows = new StringBuilder();
         row(rows, "Basic Salary (" + slip.getMonthLabel() + ")", slip.getBaseSalary());
         if (slip.getLeaveDeduction() != null && slip.getLeaveDeduction().signum() > 0) {

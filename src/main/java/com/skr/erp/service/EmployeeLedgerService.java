@@ -1,6 +1,5 @@
 package com.skr.erp.service;
 
-import com.skr.erp.common.constants.AttendanceStatus;
 import com.skr.erp.common.constants.LedgerEntryType;
 import com.skr.erp.common.constants.PaymentType;
 import com.skr.erp.dto.request.BulkAdvanceRequest;
@@ -12,51 +11,65 @@ import com.skr.erp.dto.response.PaySlipResponse;
 import com.skr.erp.dto.response.PayrollResponse;
 import com.skr.erp.entity.Employee;
 import com.skr.erp.entity.EmployeeLedger;
-import com.skr.erp.entity.EmployeeWorkPeriod;
+import com.skr.erp.entity.EmployeePayslip;
 import com.skr.erp.exception.BusinessException;
-import com.skr.erp.repository.EmployeeAttendanceRepository;
 import com.skr.erp.repository.EmployeeLedgerRepository;
+import com.skr.erp.repository.EmployeePayslipRepository;
 import com.skr.erp.repository.EmployeeRepository;
-import com.skr.erp.repository.EmployeeWorkPeriodRepository;
 import com.skr.erp.repository.ProductionEntryDetailRepository;
 import com.skr.erp.repository.SystemSettingRepository;
+import jakarta.persistence.criteria.Predicate;
+import lombok.Builder;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.Year;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 /**
- * Employee payroll: monthly pay-slips (earned = gross − leave), advances, settlements and net pending.
+ * Employee payroll account: advances, expenses, settlements and the payroll view. Monthly salary
+ * slips come from {@link PayslipGenerationService} (saved history + live current month).
  */
 @Service
 @RequiredArgsConstructor
 public class EmployeeLedgerService {
 
-    private static final DateTimeFormatter MONTH = DateTimeFormatter.ofPattern("MMM yyyy");
+    private static final DateTimeFormatter MONTH = DateTimeFormatter.ofPattern("MMM yyyy", Locale.ENGLISH);
+    private static final List<LedgerEntryType> SETTLEMENT_TYPES =
+            List.of(LedgerEntryType.PAYOUT, LedgerEntryType.ADVANCE_ADJUSTMENT);
+    private static final int MAX_PAGE_SIZE = 500;
 
     private final EmployeeRepository employeeRepository;
     private final EmployeeLedgerRepository ledgerRepository;
     private final ProductionEntryDetailRepository productionEntryDetailRepository;
-    private final EmployeeAttendanceRepository employeeAttendanceRepository;
-    private final EmployeeWorkPeriodRepository workPeriodRepository;
     private final SystemSettingRepository systemSettingRepository;
+    private final PayslipGenerationService payslips;
 
-    private record MonthSalary(BigDecimal base, double leaveDays, BigDecimal leaveDeduction, BigDecimal earned) {}
+    // Salary side of the payroll view (one year of monthly slips, or piece-rate totals).
+    @Builder
+    private record SalarySummary(List<PaySlipResponse> slips, BigDecimal earned, BigDecimal currentMonthAccrued,
+                                 BigDecimal pendingSettlement, double leaveThisMonth, int year, List<Integer> years) {}
 
     // Record a single advance (period null) or a slip settlement (period = that month).
     public PayrollResponse recordEntry(UUID employeeId, RecordLedgerRequest request) {
         Employee employee = findEmployee(employeeId);
-        validateSettlement(employee, request);
+        LocalDate period = firstOfMonth(request.getPeriod());
+        validateSettlement(employee, request, period);
         EmployeeLedger entry = new EmployeeLedger();
         entry.setEmployee(employee);
         entry.setEntryDate(request.getEntryDate());
@@ -64,9 +77,11 @@ public class EmployeeLedgerService {
         entry.setAmount(request.getAmount());
         entry.setMode(request.getMode());
         entry.setNote(request.getNote());
-        entry.setPeriod(request.getPeriod());
+        entry.setPeriod(period);
         ledgerRepository.save(entry);
         applyBalanceDelta(employee, balanceDelta(request.getType(), request.getAmount()));
+        // Keep the saved slip's paid/due snapshot in step (locks the month once fully paid).
+        if (period != null && isSettlement(request.getType())) payslips.syncPayment(employeeId, period);
         return getPayroll(employeeId);
     }
 
@@ -106,10 +121,7 @@ public class EmployeeLedgerService {
         if (entry.getType() != LedgerEntryType.ADVANCE && entry.getType() != LedgerEntryType.SPEND) {
             throw new BusinessException("Only advances or expenses can be deleted");
         }
-        boolean isLatest = ledgerRepository.findByEmployeeIdOrderByEntryDateDescCreatedAtDesc(employeeId).stream()
-                .filter(t -> t.getType() == entry.getType()).findFirst()
-                .map(t -> t.getId().equals(entryId)).orElse(false);
-        if (!isLatest) {
+        if (!entryId.equals(latestIdOfType(employeeId, entry.getType()))) {
             throw new BusinessException("Only the latest entry can be deleted");
         }
         ledgerRepository.delete(entry);
@@ -118,10 +130,9 @@ public class EmployeeLedgerService {
     }
 
     // A settlement (direct payment or from advance) is only valid for a completed month, within its due.
-    private void validateSettlement(Employee employee, RecordLedgerRequest request) {
-        if (request.getType() != LedgerEntryType.PAYOUT && request.getType() != LedgerEntryType.ADVANCE_ADJUSTMENT) return;
-        boolean monthly = employee.getPaymentType() == PaymentType.MONTHLY;
-        BigDecimal due = monthly ? monthlyDue(employee, request) : pieceDue(employee);
+    private void validateSettlement(Employee employee, RecordLedgerRequest request, LocalDate period) {
+        if (!isSettlement(request.getType())) return;
+        BigDecimal due = isMonthly(employee) ? monthlyDue(employee, period) : pieceDue(employee.getId());
         if (request.getAmount().compareTo(due) > 0) throw new BusinessException("Amount exceeds the balance due");
         if (request.getType() == LedgerEntryType.ADVANCE_ADJUSTMENT
                 && request.getAmount().compareTo(nz(employee.getAdvanceBalance())) > 0) {
@@ -129,21 +140,20 @@ public class EmployeeLedgerService {
         }
     }
 
-    // Due for a completed month (monthly staff) — the period is required and must be past.
-    private BigDecimal monthlyDue(Employee employee, RecordLedgerRequest request) {
-        LocalDate period = request.getPeriod();
+    // Due of a completed month's saved slip (monthly staff) — the month is required and must be past.
+    private BigDecimal monthlyDue(Employee employee, LocalDate period) {
         if (period == null) throw new BusinessException("Settlement must specify the month");
-        YearMonth ym = YearMonth.from(period);
-        if (!ym.isBefore(YearMonth.now())) throw new BusinessException("The current or a future month cannot be settled yet");
-        List<EmployeeLedger> txns = ledgerRepository.findByEmployeeIdOrderByEntryDateDescCreatedAtDesc(employee.getId());
-        return salaryBreakdown(employee, ym).earned().subtract(paidForPeriod(txns, ym));
+        if (!YearMonth.from(period).isBefore(YearMonth.now())) {
+            throw new BusinessException("The current or a future month cannot be settled yet");
+        }
+        return payslips.dueForSettlement(employee, period);
     }
 
     // Total outstanding piece earnings (piece-rate staff) — settled directly, not month-bound.
-    private BigDecimal pieceDue(Employee employee) {
-        List<EmployeeLedger> txns = ledgerRepository.findByEmployeeIdOrderByEntryDateDescCreatedAtDesc(employee.getId());
-        BigDecimal earned = nz(productionEntryDetailRepository.sumEarningByEmployee(employee.getId()));
-        return earned.subtract(sum(txns, LedgerEntryType.PAYOUT)).subtract(sum(txns, LedgerEntryType.ADVANCE_ADJUSTMENT));
+    private BigDecimal pieceDue(UUID employeeId) {
+        Map<LedgerEntryType, BigDecimal> sums = sumsByType(employeeId);
+        BigDecimal earned = nz(productionEntryDetailRepository.sumEarningByEmployee(employeeId));
+        return earned.subtract(sum(sums, LedgerEntryType.PAYOUT)).subtract(sum(sums, LedgerEntryType.ADVANCE_ADJUSTMENT));
     }
 
     // Give a weekly expense (pocket money) to several employees at once — counts like advance.
@@ -168,86 +178,125 @@ public class EmployeeLedgerService {
         return getPayroll(employeeId, new PayrollQuery());
     }
 
+    // Payroll view: one year of monthly slips (or piece totals) + overview totals + a page of transactions.
     @Transactional
     public PayrollResponse getPayroll(UUID employeeId, PayrollQuery query) {
         Employee employee = findEmployee(employeeId);
-        // Settlement is manual only — payslip generation never auto-settles.
-        List<EmployeeLedger> txns = ledgerRepository.findByEmployeeIdOrderByEntryDateDescCreatedAtDesc(employeeId);
-        boolean monthly = employee.getPaymentType() == PaymentType.MONTHLY;
-        // When the auto-settle setting is on, settle completed-month dues from advance automatically.
-        if (autoSettleEnabled()) {
-            if (monthly) autoAdjustPastMonths(employee, txns);
-            else autoAdjustPiece(employee, txns);
-        }
+        // Save any completed month not stored yet (monthly staff); history is then only read back.
+        payslips.ensureGenerated(employee);
+        if (autoSettleEnabled()) autoSettle(employee);
+        Map<LedgerEntryType, BigDecimal> sums = sumsByType(employeeId);
+        int year = query.getYear() != null ? query.getYear() : Year.now().getValue();
+        SalarySummary salary = isMonthly(employee) ? monthlySummary(employee, year) : pieceSummary(employeeId, sums);
+        return toPayrollResponse(employee, sums, salary, transactionLog(employeeId, query));
+    }
 
-        BigDecimal advanceGiven = sum(txns, LedgerEntryType.ADVANCE).add(sum(txns, LedgerEntryType.SPEND));
-        BigDecimal payouts = sum(txns, LedgerEntryType.PAYOUT);
-        BigDecimal advanceAdjusted = sum(txns, LedgerEntryType.ADVANCE_ADJUSTMENT);
+    // Monthly staff: the year's month rows + all-time totals (saved months + live current month).
+    private SalarySummary monthlySummary(Employee employee, int year) {
+        PayslipGenerationService.MonthCalc current = payslips.currentMonth(employee);
+        EmployeePayslipRepository.Totals saved = payslips.savedTotals(employee.getId());
+        return SalarySummary.builder()
+                .slips(payslips.slipsForYear(employee, year, current))
+                .earned(nz(saved.getEarned()).add(current.earned()))
+                .currentMonthAccrued(current.earned())
+                .pendingSettlement(nz(saved.getDue()))
+                .leaveThisMonth(current.leaveDays().doubleValue())
+                .year(year).years(payslips.yearsFor(employee)).build();
+    }
 
-        List<PaySlipResponse> slips = new ArrayList<>();
-        BigDecimal earned;
-        double leaveThisMonth = 0;
-        BigDecimal currentMonthAccrued = BigDecimal.ZERO;
-        if (monthly) {
-            SlipBuild build = buildSlips(employee, txns, BigDecimal.ZERO);
-            slips = build.slips();
-            earned = build.totalEarned();
-            leaveThisMonth = build.leaveThisMonth();
-            currentMonthAccrued = salaryBreakdown(employee, YearMonth.now()).earned();
-        } else {
-            earned = nz(productionEntryDetailRepository.sumEarningByEmployee(employeeId));
-            // Piece current-month accrual grows as more piece work is recorded this month.
-            YearMonth now = YearMonth.now();
-            currentMonthAccrued = nz(productionEntryDetailRepository
-                    .sumEarningByEmployeeBetween(employeeId, now.atDay(1), now.atEndOfMonth()));
-        }
+    // Piece-rate staff: earnings come from recorded work; no monthly slips.
+    private SalarySummary pieceSummary(UUID employeeId, Map<LedgerEntryType, BigDecimal> sums) {
+        YearMonth now = YearMonth.now();
+        BigDecimal earned = nz(productionEntryDetailRepository.sumEarningByEmployee(employeeId));
+        BigDecimal settled = sum(sums, LedgerEntryType.PAYOUT).add(sum(sums, LedgerEntryType.ADVANCE_ADJUSTMENT));
+        BigDecimal thisMonth = productionEntryDetailRepository.sumEarningByEmployeeBetween(employeeId, now.atDay(1), now.atEndOfMonth());
+        return SalarySummary.builder().slips(List.of()).earned(earned)
+                .currentMonthAccrued(nz(thisMonth))
+                .pendingSettlement(earned.subtract(settled).max(BigDecimal.ZERO))
+                .year(now.getYear()).years(List.of()).build();
+    }
 
-        // Unsettled total: completed-month dues (monthly) or outstanding piece earnings (piece).
-        BigDecimal pendingSettlement = monthly
-                ? slips.stream().filter(s -> !s.isCurrent()).map(PaySlipResponse::getDue)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add)
-                : earned.subtract(payouts).subtract(advanceAdjusted).max(BigDecimal.ZERO);
-
-        // Full transaction log (only newest advance & newest expense are deletable).
-        UUID latestAdvance = latestIdOfType(txns, LedgerEntryType.ADVANCE);
-        UUID latestSpend = latestIdOfType(txns, LedgerEntryType.SPEND);
-        List<LedgerEntryResponse> log = new ArrayList<>();
-        txns.forEach(t -> log.add(toResponse(t, t.getId().equals(latestAdvance) || t.getId().equals(latestSpend))));
-        log.sort(Comparator.comparing(LedgerEntryResponse::getEntryDate, Comparator.nullsLast(Comparator.reverseOrder())));
-
-        // Filter + paginate the transaction log and the slips (server-side).
-        List<LedgerEntryResponse> filtered = log.stream().filter(e -> matches(e, query)).toList();
-
+    private PayrollResponse toPayrollResponse(Employee employee, Map<LedgerEntryType, BigDecimal> sums,
+                                              SalarySummary salary, Page<EmployeeLedger> log) {
+        BigDecimal advanceGiven = sum(sums, LedgerEntryType.ADVANCE).add(sum(sums, LedgerEntryType.SPEND));
+        BigDecimal payouts = sum(sums, LedgerEntryType.PAYOUT);
         return PayrollResponse.builder()
-                .paymentType(employee.getPaymentType())
-                .monthlySalary(nz(employee.getMonthlySalary()))
-                .totalEarned(earned).totalAdvanceGiven(advanceGiven)
+                .paymentType(employee.getPaymentType()).monthlySalary(nz(employee.getMonthlySalary()))
+                .totalEarned(salary.earned()).totalAdvanceGiven(advanceGiven)
                 .advanceBalance(nz(employee.getAdvanceBalance())).totalPaid(payouts)
-                .advanceAdjusted(advanceAdjusted).currentMonthAccrued(currentMonthAccrued)
-                .pending(earned.subtract(advanceGiven).subtract(payouts))
-                .pendingSettlement(pendingSettlement)
-                .leaveDaysThisMonth(leaveThisMonth)
-                .slips(page(slips, query.getSlipPage(), query.getSlipSize())).slipTotal(slips.size())
-                .transactions(page(filtered, query.getTxnPage(), query.getTxnSize())).txnTotal(filtered.size())
+                .advanceAdjusted(sum(sums, LedgerEntryType.ADVANCE_ADJUSTMENT))
+                .currentMonthAccrued(salary.currentMonthAccrued())
+                .pending(salary.earned().subtract(advanceGiven).subtract(payouts))
+                .pendingSettlement(salary.pendingSettlement()).leaveDaysThisMonth(salary.leaveThisMonth())
+                .year(salary.year()).availableYears(salary.years())
+                .slips(salary.slips()).slipTotal(salary.slips().size())
+                .transactions(toLogResponses(employee.getId(), log.getContent())).txnTotal(log.getTotalElements())
                 .build();
     }
 
-    // One month's computed salary slip — used by the pay-slip PDF.
+    // When the auto-settle setting is on, completed-month dues are settled from the advance balance.
+    private void autoSettle(Employee employee) {
+        if (isMonthly(employee)) autoAdjustPastMonths(employee);
+        else autoAdjustPiece(employee);
+    }
+
+    private boolean autoSettleEnabled() {
+        return systemSettingRepository.findBySettingKey("PAYROLL_AUTO_SETTLE")
+                .map(s -> "true".equalsIgnoreCase(s.getSettingValue())).orElse(false);
+    }
+
+    // Monthly: settle each open saved month, oldest first, from the advance pool.
+    private void autoAdjustPastMonths(Employee employee) {
+        BigDecimal pool = nz(employee.getAdvanceBalance());
+        BigDecimal consumed = BigDecimal.ZERO;
+        for (EmployeePayslip slip : pool.signum() > 0 ? payslips.openDueSlips(employee.getId()) : List.<EmployeePayslip>of()) {
+            if (pool.signum() <= 0) break;
+            BigDecimal apply = slip.getDue().min(pool);
+            saveAdjustment(employee, YearMonth.from(slip.getPeriod()), apply);
+            payslips.syncPayment(employee.getId(), slip.getPeriod());
+            pool = pool.subtract(apply);
+            consumed = consumed.add(apply);
+        }
+        applyBalanceDelta(employee, consumed.negate());
+    }
+
+    // Piece-rate: auto-settle completed-month earnings (excludes the in-progress month) from advance.
+    private void autoAdjustPiece(Employee employee) {
+        BigDecimal pool = nz(employee.getAdvanceBalance());
+        if (pool.signum() <= 0) return;
+        YearMonth prev = YearMonth.now().minusMonths(1);
+        LocalDate start = employee.getJoiningDate() != null ? employee.getJoiningDate() : LocalDate.of(1970, 1, 1);
+        BigDecimal completedEarned = nz(productionEntryDetailRepository
+                .sumEarningByEmployeeBetween(employee.getId(), start, prev.atEndOfMonth()));
+        Map<LedgerEntryType, BigDecimal> sums = sumsByType(employee.getId());
+        BigDecimal due = completedEarned.subtract(sum(sums, LedgerEntryType.PAYOUT))
+                .subtract(sum(sums, LedgerEntryType.ADVANCE_ADJUSTMENT));
+        if (due.signum() <= 0) return;
+        BigDecimal apply = due.min(pool);
+        saveAdjustment(employee, prev, apply);
+        applyBalanceDelta(employee, apply.negate());
+    }
+
+    // One advance-adjustment entry settling a month, dated at that month's end.
+    private void saveAdjustment(Employee employee, YearMonth month, BigDecimal amount) {
+        EmployeeLedger adj = new EmployeeLedger();
+        adj.setEmployee(employee);
+        adj.setEntryDate(month.atEndOfMonth());
+        adj.setType(LedgerEntryType.ADVANCE_ADJUSTMENT);
+        adj.setAmount(amount);
+        adj.setPeriod(month.atDay(1));
+        adj.setNote(month.atDay(1).format(MONTH));
+        ledgerRepository.save(adj);
+    }
+
+    // One month's slip for the pay-slip PDF (live current month, else the saved slip).
     public PaySlipResponse slipForMonth(UUID employeeId, LocalDate period) {
-        Employee employee = findEmployee(employeeId);
-        List<EmployeeLedger> txns = ledgerRepository.findByEmployeeIdOrderByEntryDateDescCreatedAtDesc(employeeId);
-        YearMonth ym = YearMonth.from(period);
-        MonthSalary ms = salaryBreakdown(employee, ym);
-        return toSlip(ym, ms, paidForPeriod(txns, ym), ym.equals(YearMonth.now()));
+        return payslips.slipFor(findEmployee(employeeId), YearMonth.from(period));
     }
 
     // Latest settlement date for a month's slip (null when the month has not been settled yet).
     public LocalDate settlementDateForMonth(UUID employeeId, LocalDate period) {
-        return ledgerRepository.findByEmployeeIdOrderByEntryDateDescCreatedAtDesc(employeeId).stream()
-                .filter(l -> (l.getType() == LedgerEntryType.PAYOUT || l.getType() == LedgerEntryType.ADVANCE_ADJUSTMENT)
-                        && period.equals(l.getPeriod()))
-                .map(EmployeeLedger::getEntryDate)
-                .max(Comparator.naturalOrder()).orElse(null);
+        return ledgerRepository.lastSettlementDate(employeeId, firstOfMonth(period));
     }
 
     // One settlement/payment entry (validated to belong to the employee) — used by the piece pay-slip PDF.
@@ -258,179 +307,55 @@ public class EmployeeLedgerService {
         return entry;
     }
 
-    // A transaction matches the chosen type (SETTLEMENT = payout + auto-adjust) and date range.
-    private boolean matches(LedgerEntryResponse e, PayrollQuery q) {
-        String type = q.getTxnType();
-        if (type != null && !type.isBlank()) {
-            boolean ok = "SETTLEMENT".equals(type)
-                    ? (e.getType() == LedgerEntryType.PAYOUT || e.getType() == LedgerEntryType.ADVANCE_ADJUSTMENT)
-                    : type.equals(e.getType().name());
-            if (!ok) return false;
+    // One filtered, newest-first page of the transaction log (filtered and paged in the database).
+    private Page<EmployeeLedger> transactionLog(UUID employeeId, PayrollQuery query) {
+        int size = Math.min(Math.max(query.getTxnSize(), 1), MAX_PAGE_SIZE);
+        Sort newestFirst = Sort.by(Sort.Order.desc("entryDate"), Sort.Order.desc("createdAt"));
+        PageRequest page = PageRequest.of(Math.max(query.getTxnPage(), 0), size, newestFirst);
+        return ledgerRepository.findAll(logFilter(employeeId, query), page);
+    }
+
+    // Employee + optional type (SETTLEMENT = payout + advance adjustment) + optional entry-date range.
+    private Specification<EmployeeLedger> logFilter(UUID employeeId, PayrollQuery q) {
+        return (root, cq, cb) -> {
+            List<Predicate> where = new ArrayList<>();
+            where.add(cb.equal(root.get("employee").get("id"), employeeId));
+            String type = q.getTxnType();
+            if (type != null && !type.isBlank()) where.add(root.get("type").in(typesFor(type)));
+            if (q.getTxnFrom() != null) where.add(cb.greaterThanOrEqualTo(root.<LocalDate>get("entryDate"), q.getTxnFrom()));
+            if (q.getTxnTo() != null) where.add(cb.lessThanOrEqualTo(root.<LocalDate>get("entryDate"), q.getTxnTo()));
+            return cb.and(where.toArray(Predicate[]::new));
+        };
+    }
+
+    // Entry types behind a filter value; an unknown value matches nothing.
+    private List<LedgerEntryType> typesFor(String type) {
+        if ("SETTLEMENT".equals(type)) return SETTLEMENT_TYPES;
+        for (LedgerEntryType t : LedgerEntryType.values()) {
+            if (t.name().equals(type)) return List.of(t);
         }
-        if (q.getTxnFrom() != null && e.getEntryDate() != null && e.getEntryDate().isBefore(q.getTxnFrom())) return false;
-        if (q.getTxnTo() != null && e.getEntryDate() != null && e.getEntryDate().isAfter(q.getTxnTo())) return false;
-        return true;
+        return List.of();
     }
 
-    private <T> List<T> page(List<T> all, int pageIndex, int size) {
-        if (size <= 0) return all;
-        int from = Math.min(Math.max(pageIndex, 0) * size, all.size());
-        int to = Math.min(from + size, all.size());
-        return all.subList(from, to);
-    }
-
-    private record SlipBuild(List<PaySlipResponse> slips, BigDecimal totalEarned, BigDecimal poolAfterPreview, double leaveThisMonth) {}
-
-    // One slip per month (join→current); current month's due previews any unapplied advance.
-    private SlipBuild buildSlips(Employee employee, List<EmployeeLedger> txns, BigDecimal pool) {
-        YearMonth now = YearMonth.now();
-        YearMonth ym = employee.getJoiningDate() != null ? YearMonth.from(employee.getJoiningDate()) : now;
-        List<EmployeeWorkPeriod> periods = workPeriodRepository.findByEmployeeIdOrderByStartDateAsc(employee.getId());
-        List<PaySlipResponse> slips = new ArrayList<>();
-        BigDecimal total = BigDecimal.ZERO;
-        double leaveNow = 0;
-        while (!ym.isAfter(now)) {
-            MonthSalary ms = salaryBreakdown(employee, ym, periods);
-            if (ms.earned().signum() > 0 || ym.equals(now)) {
-                boolean current = ym.equals(now);
-                // Current (in-progress) month gets no advance applied — only completed months auto-settle.
-                BigDecimal paid = paidForPeriod(txns, ym);
-                if (current) leaveNow = ms.leaveDays();
-                slips.add(toSlip(ym, ms, paid, current));
-                total = total.add(ms.earned());
-            }
-            ym = ym.plusMonths(1);
-        }
-        slips.sort(Comparator.comparing(PaySlipResponse::getPeriod).reversed());
-        return new SlipBuild(slips, total, pool, leaveNow);
-    }
-
-    private PaySlipResponse toSlip(YearMonth ym, MonthSalary ms, BigDecimal paid, boolean current) {
-        BigDecimal due = ms.earned().subtract(paid).max(BigDecimal.ZERO);
-        // Only a completed (past) month with a balance is payable.
-        boolean payable = !current && due.signum() > 0;
-        return PaySlipResponse.builder()
-                .period(ym.atDay(1)).monthLabel(ym.atDay(1).format(MONTH))
-                .baseSalary(ms.base()).leaveDays(ms.leaveDays()).leaveDeduction(ms.leaveDeduction())
-                .earned(ms.earned()).paid(paid).due(due)
-                .status(statusOf(ms.earned(), paid)).current(current).payable(payable).build();
-    }
-
-    private boolean autoSettleEnabled() {
-        return systemSettingRepository.findBySettingKey("PAYROLL_AUTO_SETTLE")
-                .map(s -> "true".equalsIgnoreCase(s.getSettingValue())).orElse(false);
-    }
-
-    // Auto-settle each completed month from the advance balance (only when the setting is enabled).
-    private void autoAdjustPastMonths(Employee employee, List<EmployeeLedger> txns) {
-        BigDecimal pool = nz(employee.getAdvanceBalance());
-        if (pool.signum() <= 0) return;
-        YearMonth now = YearMonth.now();
-        YearMonth ym = employee.getJoiningDate() != null ? YearMonth.from(employee.getJoiningDate()) : now;
-        List<EmployeeWorkPeriod> periods = workPeriodRepository.findByEmployeeIdOrderByStartDateAsc(employee.getId());
-        BigDecimal consumed = BigDecimal.ZERO;
-        while (ym.isBefore(now) && pool.signum() > 0) {
-            MonthSalary ms = salaryBreakdown(employee, ym, periods);
-            BigDecimal due = ms.earned().subtract(paidForPeriod(txns, ym));
-            if (due.signum() > 0) {
-                BigDecimal apply = due.min(pool);
-                EmployeeLedger adj = new EmployeeLedger();
-                adj.setEmployee(employee);
-                adj.setEntryDate(ym.atEndOfMonth());
-                adj.setType(LedgerEntryType.ADVANCE_ADJUSTMENT);
-                adj.setAmount(apply);
-                adj.setPeriod(ym.atDay(1));
-                adj.setNote(ym.atDay(1).format(MONTH));
-                ledgerRepository.save(adj);
-                txns.add(adj);
-                pool = pool.subtract(apply);
-                consumed = consumed.add(apply);
-            }
-            ym = ym.plusMonths(1);
-        }
-        if (consumed.signum() > 0) {
-            employee.setAdvanceBalance(nz(employee.getAdvanceBalance()).subtract(consumed));
-            employeeRepository.save(employee);
-        }
-    }
-
-    // Piece-rate: auto-settle completed-month earnings (excludes the in-progress month) from advance.
-    private void autoAdjustPiece(Employee employee, List<EmployeeLedger> txns) {
-        BigDecimal pool = nz(employee.getAdvanceBalance());
-        if (pool.signum() <= 0) return;
-        YearMonth prev = YearMonth.now().minusMonths(1);
-        LocalDate start = employee.getJoiningDate() != null ? employee.getJoiningDate() : LocalDate.of(1970, 1, 1);
-        BigDecimal completedEarned = nz(productionEntryDetailRepository
-                .sumEarningByEmployeeBetween(employee.getId(), start, prev.atEndOfMonth()));
-        BigDecimal settled = sum(txns, LedgerEntryType.PAYOUT).add(sum(txns, LedgerEntryType.ADVANCE_ADJUSTMENT));
-        BigDecimal due = completedEarned.subtract(settled);
-        if (due.signum() <= 0) return;
-        BigDecimal apply = due.min(pool);
-        EmployeeLedger adj = new EmployeeLedger();
-        adj.setEmployee(employee);
-        adj.setEntryDate(prev.atEndOfMonth());
-        adj.setType(LedgerEntryType.ADVANCE_ADJUSTMENT);
-        adj.setAmount(apply);
-        adj.setPeriod(prev.atDay(1));
-        adj.setNote(prev.atDay(1).format(MONTH));
-        ledgerRepository.save(adj);
-        txns.add(adj);
-        employee.setAdvanceBalance(pool.subtract(apply));
-        employeeRepository.save(employee);
-    }
-
-    // Convenience: load the employee's work spells, then compute the month's breakdown.
-    private MonthSalary salaryBreakdown(Employee employee, YearMonth ym) {
-        return salaryBreakdown(employee, ym, workPeriodRepository.findByEmployeeIdOrderByStartDateAsc(employee.getId()));
-    }
-
-    // Salary breakdown for a month: base (days employed × per-day), leave deduction, net earned.
-    // Only days inside an employment spell count, so months after someone left earn nothing.
-    private MonthSalary salaryBreakdown(Employee employee, YearMonth ym, List<EmployeeWorkPeriod> periods) {
-        BigDecimal basic = nz(employee.getMonthlySalary());
-        BigDecimal zero = BigDecimal.ZERO;
-        if (basic.signum() == 0) return new MonthSalary(zero, 0, zero, zero);
-        LocalDate monthStart = ym.atDay(1), monthEnd = ym.atEndOfMonth(), today = LocalDate.now();
-        LocalDate join = employee.getJoiningDate();
-        LocalDate start = (join != null && join.isAfter(monthStart)) ? join : monthStart;
-        LocalDate end = ym.equals(YearMonth.now()) && today.isBefore(monthEnd) ? today : monthEnd;
-        if (start.isAfter(end)) return new MonthSalary(zero, 0, zero, zero);
-        long employedDays = employedDays(periods, start, end);
-        if (employedDays == 0) return new MonthSalary(zero, 0, zero, zero);
-        double leaveDays = employeeAttendanceRepository.findByEmployeeIdAndDateBetween(employee.getId(), start, end)
-                .stream().mapToDouble(a -> a.getStatus() == AttendanceStatus.HALF_DAY ? 0.5 : 1.0).sum();
-        BigDecimal perDay = basic.divide(BigDecimal.valueOf(ym.lengthOfMonth()), 2, RoundingMode.HALF_UP);
-        // Whole rupees, so the UI's rounded amount matches the due exactly (no paise-rounding rejection).
-        BigDecimal base = perDay.multiply(BigDecimal.valueOf(employedDays)).setScale(0, RoundingMode.HALF_UP);
-        BigDecimal leaveDeduction = perDay.multiply(BigDecimal.valueOf(leaveDays)).setScale(0, RoundingMode.HALF_UP);
-        return new MonthSalary(base, leaveDays, leaveDeduction, base.subtract(leaveDeduction).max(zero));
-    }
-
-    // Days in [from,to] that fall inside any employment spell (spells never overlap, so sum is safe).
-    // No spells (legacy data) → the whole range counts, preserving the old behaviour.
-    private long employedDays(List<EmployeeWorkPeriod> periods, LocalDate from, LocalDate to) {
-        if (periods == null || periods.isEmpty()) return ChronoUnit.DAYS.between(from, to) + 1;
-        long days = 0;
-        for (EmployeeWorkPeriod p : periods) {
-            LocalDate ps = p.getStartDate();
-            LocalDate pe = p.getEndDate() != null ? p.getEndDate() : to;
-            LocalDate s = ps.isAfter(from) ? ps : from;
-            LocalDate e = pe.isBefore(to) ? pe : to;
-            if (!s.isAfter(e)) days += ChronoUnit.DAYS.between(s, e) + 1;
-        }
-        return days;
+    // Transaction rows; only the newest advance and the newest expense are deletable.
+    private List<LedgerEntryResponse> toLogResponses(UUID employeeId, List<EmployeeLedger> entries) {
+        UUID latestAdvance = latestIdOfType(employeeId, LedgerEntryType.ADVANCE);
+        UUID latestSpend = latestIdOfType(employeeId, LedgerEntryType.SPEND);
+        return entries.stream()
+                .map(t -> toResponse(t, t.getId().equals(latestAdvance) || t.getId().equals(latestSpend)))
+                .toList();
     }
 
     // This month's net earned salary — used by the employee list/detail current-month figure.
     public BigDecimal currentMonthSalaryPayable(Employee employee) {
-        return salaryBreakdown(employee, YearMonth.now()).earned();
+        return payslips.currentMonth(employee).earned();
     }
 
-    // Money given to one employee (advance + expense + direct payment) — single ledger read.
+    // Money given to one employee (advance + expense + direct payment) — one grouped read.
     public BigDecimal moneyGivenForEmployee(Employee employee) {
-        List<EmployeeLedger> txns = ledgerRepository.findByEmployeeIdOrderByEntryDateDescCreatedAtDesc(employee.getId());
-        return sum(txns, LedgerEntryType.ADVANCE).add(sum(txns, LedgerEntryType.SPEND))
-                .add(sum(txns, LedgerEntryType.PAYOUT));
+        Map<LedgerEntryType, BigDecimal> sums = sumsByType(employee.getId());
+        return sum(sums, LedgerEntryType.ADVANCE).add(sum(sums, LedgerEntryType.SPEND))
+                .add(sum(sums, LedgerEntryType.PAYOUT));
     }
 
     // Overall payroll (all employees) = advances + expenses + payments ever given.
@@ -440,8 +365,8 @@ public class EmployeeLedgerService {
     }
 
     // Money given grouped by employee (one query) — for the scalable employee list.
-    public java.util.Map<UUID, BigDecimal> moneyGivenGrouped() {
-        java.util.Map<UUID, BigDecimal> map = new java.util.HashMap<>();
+    public Map<UUID, BigDecimal> moneyGivenGrouped() {
+        Map<UUID, BigDecimal> map = new HashMap<>();
         for (Object[] r : ledgerRepository.sumMoneyGivenGroupedByEmployee()) {
             map.put((UUID) r[0], r[1] == null ? BigDecimal.ZERO : (BigDecimal) r[1]);
         }
@@ -450,18 +375,8 @@ public class EmployeeLedgerService {
 
     // Cumulative salary earned from joining to the current month (monthly employees only).
     public BigDecimal totalAccruedSalary(Employee employee) {
-        if (employee.getPaymentType() != PaymentType.MONTHLY || nz(employee.getMonthlySalary()).signum() == 0) {
-            return BigDecimal.ZERO;
-        }
-        YearMonth now = YearMonth.now();
-        YearMonth ym = employee.getJoiningDate() != null ? YearMonth.from(employee.getJoiningDate()) : now;
-        List<EmployeeWorkPeriod> periods = workPeriodRepository.findByEmployeeIdOrderByStartDateAsc(employee.getId());
-        BigDecimal total = BigDecimal.ZERO;
-        while (!ym.isAfter(now)) {
-            total = total.add(salaryBreakdown(employee, ym, periods).earned());
-            ym = ym.plusMonths(1);
-        }
-        return total;
+        if (!isMonthly(employee)) return BigDecimal.ZERO;
+        return payslips.totals(employee).totalEarned();
     }
 
     // Kept for the existing ledger card until the new payroll UI replaces it.
@@ -474,22 +389,22 @@ public class EmployeeLedgerService {
                 .netPayable(p.getPending()).entries(p.getTransactions()).build();
     }
 
-    private String statusOf(BigDecimal earned, BigDecimal paid) {
-        if (paid.signum() <= 0) return "UNPAID";
-        return paid.compareTo(earned) >= 0 ? "PAID" : "PARTIAL";
+    // Per-type ledger totals for one employee (one grouped query).
+    private Map<LedgerEntryType, BigDecimal> sumsByType(UUID employeeId) {
+        Map<LedgerEntryType, BigDecimal> sums = new EnumMap<>(LedgerEntryType.class);
+        for (Object[] r : ledgerRepository.sumByTypeForEmployee(employeeId)) {
+            sums.put((LedgerEntryType) r[0], (BigDecimal) r[1]);
+        }
+        return sums;
     }
 
-    private BigDecimal sum(List<EmployeeLedger> txns, LedgerEntryType type) {
-        return txns.stream().filter(t -> t.getType() == type)
-                .map(EmployeeLedger::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+    private BigDecimal sum(Map<LedgerEntryType, BigDecimal> sums, LedgerEntryType type) {
+        return sums.getOrDefault(type, BigDecimal.ZERO);
     }
 
-    private BigDecimal paidForPeriod(List<EmployeeLedger> txns, YearMonth ym) {
-        LocalDate period = ym.atDay(1);
-        return txns.stream()
-                .filter(t -> (t.getType() == LedgerEntryType.PAYOUT || t.getType() == LedgerEntryType.ADVANCE_ADJUSTMENT)
-                        && period.equals(t.getPeriod()))
-                .map(EmployeeLedger::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+    private UUID latestIdOfType(UUID employeeId, LedgerEntryType type) {
+        return ledgerRepository.findFirstByEmployeeIdAndTypeOrderByEntryDateDescCreatedAtDesc(employeeId, type)
+                .map(EmployeeLedger::getId).orElse(null);
     }
 
     private LedgerEntryResponse toResponse(EmployeeLedger entry, boolean deletable) {
@@ -500,9 +415,17 @@ public class EmployeeLedgerService {
                 .deletable(deletable).build();
     }
 
-    private UUID latestIdOfType(List<EmployeeLedger> txns, LedgerEntryType type) {
-        return txns.stream().filter(t -> t.getType() == type)
-                .map(EmployeeLedger::getId).findFirst().orElse(null);
+    private boolean isSettlement(LedgerEntryType type) {
+        return SETTLEMENT_TYPES.contains(type);
+    }
+
+    private boolean isMonthly(Employee employee) {
+        return employee.getPaymentType() == PaymentType.MONTHLY;
+    }
+
+    // Slip months are always stored as the first day of the month.
+    private LocalDate firstOfMonth(LocalDate date) {
+        return date == null ? null : date.withDayOfMonth(1);
     }
 
     private Employee findEmployee(UUID employeeId) {

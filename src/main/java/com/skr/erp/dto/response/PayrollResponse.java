@@ -24,7 +24,9 @@ public class PayrollResponse {
     private BigDecimal pending;           // earned − advances − payouts (negative = paid ahead)
     private BigDecimal pendingSettlement; // unsettled completed-month dues (monthly) / outstanding piece total
     private double leaveDaysThisMonth;
-    private List<PaySlipResponse> slips;          // one page; empty for piece-rate
+    private Integer year;                 // calendar year the slips belong to
+    private List<Integer> availableYears; // joining year → current year, newest first (monthly staff)
+    private List<PaySlipResponse> slips;  // every month of the year, newest first; empty for piece-rate
     private long slipTotal;
     private List<LedgerEntryResponse> transactions; // one page (filtered)
     private long txnTotal;
