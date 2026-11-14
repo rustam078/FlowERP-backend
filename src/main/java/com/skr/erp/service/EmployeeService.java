@@ -261,13 +261,6 @@ public class EmployeeService {
 
 
     // ── Attendance (exception-based: only absent / half-day days are stored) ──
-//    @Transactional(readOnly = true)
-//    public List<AttendanceResponse> getAttendance(UUID employeeId, LocalDate from, LocalDate to) {
-//        return employeeAttendanceRepository.findByEmployeeIdAndDateBetween(employeeId, from, to).stream()
-//                .map(a -> AttendanceResponse.builder().date(a.getDate()).status(a.getStatus()).build())
-//                .toList();
-//    }
-
     @Transactional(readOnly = true)
     public List<AttendanceResponse> getAttendance(UUID employeeId, LocalDate from, LocalDate to) {
 
