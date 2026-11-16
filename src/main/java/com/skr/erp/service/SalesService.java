@@ -2,6 +2,7 @@ package com.skr.erp.service;
 
 import com.skr.erp.common.constants.InventoryBatchStatus;
 import com.skr.erp.common.constants.InventoryTransactionType;
+import com.skr.erp.common.constants.PaymentRules;
 import com.skr.erp.common.constants.PaymentMode;
 import com.skr.erp.common.constants.PaymentStatus;
 import com.skr.erp.common.response.PageResponse;
@@ -51,8 +52,6 @@ public class SalesService {
     private static final String SALES_INVOICE_TEMPLATE_KEY = "SALES_INVOICE_TEMPLATE";
     private static final String SALES_GST_ENABLED_KEY = "SALES_GST_ENABLED";
     private static final String DEFAULT_GST_PERCENT_KEY = "DEFAULT_GST_PERCENT";
-    // A sale's own checkout payments are saved in the same transaction as the sale; anything later is a clearance.
-    private static final long CHECKOUT_WINDOW_SECONDS = 5;
 
     /**
      * GST on the net amount (subtotal - discount) when SALES_GST_ENABLED is on;
@@ -823,7 +822,7 @@ public class SalesService {
 
     // Payments made after this invoice's own checkout: a later sale's checkout or a due settlement (newest first).
     private List<SalesDetailsResponse.Clearance> clearancesOf(SalesOrder order) {
-        LocalDateTime checkoutEnd = order.getCreatedAt().plusSeconds(CHECKOUT_WINDOW_SECONDS);
+        LocalDateTime checkoutEnd = order.getCreatedAt().plusSeconds(PaymentRules.CHECKOUT_WINDOW_SECONDS);
         return customerPaymentRepository.findBySalesOrderIdOrderByCreatedAtDesc(order.getId()).stream()
                 .filter(p -> p.getReferenceInvoiceNo() != null || p.getCreatedAt().isAfter(checkoutEnd))
                 .map(p -> SalesDetailsResponse.Clearance.builder()

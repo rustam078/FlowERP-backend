@@ -149,6 +149,7 @@ public class PermissionInterceptor implements HandlerInterceptor {
             case "production" -> "production";
             case "employees" -> "employees";
             case "dashboard" -> "dashboard";
+            case "revenue" -> "revenue";
             case "settings", "users" -> "settings";
             default -> null;
         };

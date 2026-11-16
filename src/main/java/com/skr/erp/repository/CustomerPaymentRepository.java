@@ -1,5 +1,6 @@
 package com.skr.erp.repository;
 
+import com.skr.erp.common.constants.PaymentRules;
 import com.skr.erp.entity.CustomerPayment;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -35,13 +36,13 @@ public interface CustomerPaymentRepository extends JpaRepository<CustomerPayment
     @Query(value = """
                 SELECT COALESCE(SUM(p.amount), 0) FROM customer_payment p JOIN sales_order s ON s.id = p.sales_order_id
                 WHERE p.reference_invoice_no IS NULL
-                  AND p.created_at > s.created_at + INTERVAL '5 seconds'
-                  AND (CAST(:start AS timestamp) IS NULL OR p.created_at >= :start)
-                  AND (CAST(:end AS timestamp) IS NULL OR p.created_at < :end)
-                  AND (CAST(:search AS text) IS NULL OR LOWER(s.invoice_no) LIKE :search
-                       OR LOWER(s.customer_name) LIKE :search OR LOWER(s.customer_mobile) LIKE :search)
-                  AND (CAST(:mode AS text) IS NULL OR p.mode = :mode)
-                  AND (CAST(:status AS text) IS NULL OR s.payment_status = :status)
+                  AND """ + PaymentRules.PAID_AFTER_CHECKOUT_SQL + """
+                  AND (CAST(:start AS timestamp) IS NULL OR p.created_at >= CAST(:start AS timestamp))
+                  AND (CAST(:end AS timestamp) IS NULL OR p.created_at < CAST(:end AS timestamp))
+                  AND (CAST(:search AS text) IS NULL OR LOWER(s.invoice_no) LIKE CAST(:search AS text)
+                       OR LOWER(s.customer_name) LIKE CAST(:search AS text) OR LOWER(s.customer_mobile) LIKE CAST(:search AS text))
+                  AND (CAST(:mode AS text) IS NULL OR p.mode = CAST(:mode AS text))
+                  AND (CAST(:status AS text) IS NULL OR s.payment_status = CAST(:status AS text))
             """, nativeQuery = true)
     BigDecimal sumSettlements(@Param("search") String search, @Param("start") LocalDateTime start,
                               @Param("end") LocalDateTime end, @Param("mode") String mode, @Param("status") String status);
