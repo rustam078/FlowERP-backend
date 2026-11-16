@@ -31,3 +31,6 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Built UI copied in by desktop/deploy.ps1 (generated on every build, never committed)
+/src/main/resources/static/
