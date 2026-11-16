@@ -23,8 +23,15 @@ public class CreateSaleOrderItemRequest {
     /** Deprecated: discount is now order-level; kept for request compatibility. */
     @DecimalMin("0.00")
     private BigDecimal discount;
+    /** Scanned lines only: the batch printed on the QR tags (requires serials). */
     private String batchNumber;
 
     /** Scanned unit serials backing this line (size should equal quantity). */
     private List<String> serials;
+
+    /**
+     * Typed lines only: a batch the user explicitly chose (products whose batches have different
+     * selling prices). The whole quantity is drawn from this batch at its price; null = FIFO.
+     */
+    private UUID batchId;
 }

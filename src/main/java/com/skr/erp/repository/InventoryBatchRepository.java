@@ -145,6 +145,11 @@ public interface InventoryBatchRepository extends JpaRepository<InventoryBatch, 
             """)
     List<InventoryBatch> findAvailableBatchesForSale(UUID productId);
 
+    // One user-chosen batch for a sale line, row-locked so concurrent sales can't oversell it.
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT b FROM InventoryBatch b JOIN FETCH b.product WHERE b.id = :batchId")
+    java.util.Optional<InventoryBatch> findByIdForSale(@Param("batchId") UUID batchId);
+
     // Same FIFO list without the write lock — safe for read-only previews (sale form pricing).
     @Query("""
             SELECT b

@@ -8,7 +8,9 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
@@ -30,6 +32,15 @@ public interface SalesOrderRepository extends JpaRepository<SalesOrder, UUID>, J
                 ORDER BY s.createdAt ASC
             """)
     List<SalesOrder> findOutstandingByMobile(@Param("mobile") String mobile);
+
+    // Same ledger, row-locked for a due settlement so two payments can't over-settle the same invoices.
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+                SELECT s FROM SalesOrder s
+                WHERE s.customerMobile = :mobile AND s.amountPaid < s.grandTotal
+                ORDER BY s.createdAt ASC
+            """)
+    List<SalesOrder> findOutstandingByMobileForUpdate(@Param("mobile") String mobile);
 
     @Query("""
                 SELECT

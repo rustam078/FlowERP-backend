@@ -7,6 +7,7 @@ import com.skr.erp.common.constants.PaymentStatus;
 import com.skr.erp.common.response.PageResponse;
 import com.skr.erp.dto.request.CreateSaleOrderItemRequest;
 import com.skr.erp.dto.request.CreateSaleOrderRequest;
+import com.skr.erp.dto.request.SettleCustomerDueRequest;
 import com.skr.erp.dto.response.*;
 import com.skr.erp.entity.*;
 import com.skr.erp.exception.BusinessException;
@@ -50,6 +51,8 @@ public class SalesService {
     private static final String SALES_INVOICE_TEMPLATE_KEY = "SALES_INVOICE_TEMPLATE";
     private static final String SALES_GST_ENABLED_KEY = "SALES_GST_ENABLED";
     private static final String DEFAULT_GST_PERCENT_KEY = "DEFAULT_GST_PERCENT";
+    // A sale's own checkout payments are saved in the same transaction as the sale; anything later is a clearance.
+    private static final long CHECKOUT_WINDOW_SECONDS = 5;
 
     /**
      * GST on the net amount (subtotal - discount) when SALES_GST_ENABLED is on;
@@ -108,9 +111,13 @@ public class SalesService {
 
         for (CreateSaleOrderItemRequest item : request.getItems()) {
 
-            String lineKey = item.getProductId() + "|" + (item.getBatchNumber() == null ? "" : item.getBatchNumber());
+            String lineKey = item.getProductId() + "|" + Objects.toString(item.getBatchNumber(), "")
+                    + "|" + Objects.toString(item.getBatchId(), "");
             if (!lineKeys.add(lineKey)) {
                 throw new BadRequestException("Duplicate product selected.");
+            }
+            if (item.getBatchNumber() != null && item.getBatchId() != null) {
+                throw new BadRequestException("A line is either scanned or drawn from a chosen batch, not both.");
             }
 
             if (item.getQuantity().compareTo(BigDecimal.ZERO) <= 0) {
@@ -130,6 +137,7 @@ public class SalesService {
                 }
             }
         }
+        rejectMixedBatchChoice(request.getItems());
 
         // ==========================
         // Reconciliation pre-check (scanned lines)
@@ -273,7 +281,7 @@ public class SalesService {
         salesOrderRepository.save(order);
     }
 
-    // Mode, group id and the checkout invoice no shared across one payment event.
+    // Mode, group id, checkout invoice no (null for a standalone settlement) of one payment event.
     private record PaymentContext(PaymentMode mode, UUID groupId, String sourceInvoiceNo) {}
 
     // Pay one sale from the running amount; records the payment and returns the leftover.
@@ -288,7 +296,7 @@ public class SalesService {
         payment.setAmount(pay);
         payment.setPaymentGroupId(ctx.groupId());
         // Stamp the checkout invoice only when this payment cleared a different (older) invoice.
-        if (!sale.getInvoiceNo().equals(ctx.sourceInvoiceNo())) {
+        if (ctx.sourceInvoiceNo() != null && !sale.getInvoiceNo().equals(ctx.sourceInvoiceNo())) {
             payment.setReferenceInvoiceNo(ctx.sourceInvoiceNo());
         }
         customerPaymentRepository.save(payment);
@@ -327,6 +335,57 @@ public class SalesService {
         return CustomerOutstandingResponse.builder()
                 .totalOutstanding(total)
                 .unpaidCount(unpaid.size())
+                .build();
+    }
+
+    // Settle a customer's dues without a new sale: one payment allocated to unpaid invoices oldest first.
+    @Transactional
+    public SettleCustomerDueResponse settleCustomerDue(SettleCustomerDueRequest request) {
+        String mobile = request.getCustomerMobile().trim();
+        // Lock the unpaid invoices first, so a parallel or repeated settlement waits for this one.
+        List<SalesOrder> ledger = salesOrderRepository.findOutstandingByMobileForUpdate(mobile);
+        List<CustomerPayment> alreadyRecorded = customerPaymentRepository.findByPaymentGroupId(request.getRequestId());
+        if (!alreadyRecorded.isEmpty()) {
+            return toSettlementResponse(alreadyRecorded, mobile); // same request again (double click / retry)
+        }
+        validateDueSettlement(request, ledger);
+        PaymentContext ctx = new PaymentContext(request.getPaymentMode(), request.getRequestId(), null);
+        BigDecimal remaining = request.getAmount();
+        for (SalesOrder sale : ledger) {
+            if (remaining.compareTo(BigDecimal.ZERO) <= 0) break;
+            remaining = payOneSale(sale, remaining, ctx);
+        }
+        return toSettlementResponse(customerPaymentRepository.findByPaymentGroupId(request.getRequestId()), mobile);
+    }
+
+    // A settlement needs real money (not CREDIT), an existing due, and may not exceed it.
+    private void validateDueSettlement(SettleCustomerDueRequest request, List<SalesOrder> ledger) {
+        if (ledger.isEmpty()) {
+            throw new BusinessException("This customer has no outstanding due.");
+        }
+        if (request.getPaymentMode() == PaymentMode.CREDIT) {
+            throw new BusinessException("Choose how the customer is paying; credit cannot settle a due.");
+        }
+        BigDecimal totalDue = ledger.stream().map(this::dueOf).reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (request.getAmount().compareTo(totalDue) > 0) {
+            throw new BusinessException("Settlement amount cannot exceed the outstanding due of " + totalDue.toPlainString() + ".");
+        }
+    }
+
+    // What one settlement paid, per invoice, plus the customer's balance left afterwards.
+    private SettleCustomerDueResponse toSettlementResponse(List<CustomerPayment> rows, String mobile) {
+        List<SettleCustomerDueResponse.Allocation> allocations = rows.stream()
+                .map(p -> SettleCustomerDueResponse.Allocation.builder()
+                        .invoiceNumber(p.getSalesOrder().getInvoiceNo())
+                        .amount(p.getAmount())
+                        .invoiceDue(dueOf(p.getSalesOrder()).max(BigDecimal.ZERO))
+                        .paymentStatus(p.getSalesOrder().getPaymentStatus())
+                        .build())
+                .toList();
+        return SettleCustomerDueResponse.builder()
+                .amountSettled(rows.stream().map(CustomerPayment::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add))
+                .remainingDue(customerBalance(mobile))
+                .allocations(allocations)
                 .build();
     }
 
@@ -423,7 +482,9 @@ public class SalesService {
         long count = ((Number) t[0]).longValue();
         BigDecimal revenue = (BigDecimal) t[1];
         BigDecimal discount = (BigDecimal) t[2];
-        BigDecimal received = (BigDecimal) t[3]; // actual cash tendered (may exceed billed, clears old dues)
+        // Checkout cash (may exceed billed, clears old dues) plus cash from due settlements in the period.
+        BigDecimal received = ((BigDecimal) t[3]).add(customerPaymentRepository.sumSettlements(pattern, start, end,
+                paymentMode != null ? paymentMode.name() : null, paymentStatus != null ? paymentStatus.name() : null));
         BigDecimal due = (BigDecimal) t[4];      // per-invoice due, floored at 0 in SQL
         return SalesSummaryResponse.builder()
                 .count(count)
@@ -543,7 +604,7 @@ public class SalesService {
         DateTimeFormatter df = DateTimeFormatter.ofPattern("dd-MMM-yyyy");
         for (SalesDetailsResponse.Clearance c : clearances) {
             sb.append("<tr><td>Due cleared ").append(c.getDate().format(df))
-                    .append(" (").append(esc(c.getMode().name())).append(", Ref: ").append(esc(c.getReferenceInvoiceNo()))
+                    .append(" (").append(esc(c.getMode().name())).append(c.getReferenceInvoiceNo() != null ? ", Ref: " + esc(c.getReferenceInvoiceNo()) : "")
                     .append(")</td><td class=\"right\">").append(cur).append(" ").append(money(nf, c.getAmount())).append("</td></tr>");
         }
     }
@@ -755,15 +816,16 @@ public class SalesService {
                 .customerBalanceDue(customerBalance(order.getCustomerMobile()))
                 .totalProfit(totalProfit)
                 .items(itemResponses)
-                .clearances(clearancesOf(order.getId()))
+                .clearances(clearancesOf(order))
                 .previousDuesAllocation(previousDuesAllocationOf(order.getInvoiceNo()))
                 .build();
     }
 
-    // Payments that cleared this invoice from a later sale's checkout (newest first).
-    private List<SalesDetailsResponse.Clearance> clearancesOf(UUID saleId) {
-        return customerPaymentRepository.findBySalesOrderIdOrderByCreatedAtDesc(saleId).stream()
-                .filter(p -> p.getReferenceInvoiceNo() != null)
+    // Payments made after this invoice's own checkout: a later sale's checkout or a due settlement (newest first).
+    private List<SalesDetailsResponse.Clearance> clearancesOf(SalesOrder order) {
+        LocalDateTime checkoutEnd = order.getCreatedAt().plusSeconds(CHECKOUT_WINDOW_SECONDS);
+        return customerPaymentRepository.findBySalesOrderIdOrderByCreatedAtDesc(order.getId()).stream()
+                .filter(p -> p.getReferenceInvoiceNo() != null || p.getCreatedAt().isAfter(checkoutEnd))
                 .map(p -> SalesDetailsResponse.Clearance.builder()
                         .date(p.getPaymentDate()).mode(p.getMode())
                         .amount(p.getAmount()).referenceInvoiceNo(p.getReferenceInvoiceNo()).build())
@@ -823,7 +885,7 @@ public class SalesService {
                 .amountReceived(nz(order.getAmountReceived()))
                 .paidToPreviousDues(prevDuesOf(order))
                 .balanceDue(dueOf(order)) // this invoice's own due only (not the customer's overall balance)
-                .clearances(clearancesOf(order.getId()))
+                .clearances(clearancesOf(order))
                 .previousDuesAllocation(previousDuesAllocationOf(order.getInvoiceNo()))
                 .build();
     }
@@ -891,8 +953,11 @@ public class SalesService {
         }
     }
 
-    // Plan a typed line: FIFO across available batches, each drawn at its own selling price.
+    // Plan a typed line: a user-chosen batch if given, else FIFO across batches at each batch's price.
     private LinePlan planTypedLine(Product product, CreateSaleOrderItemRequest item) {
+        if (item.getBatchId() != null) {
+            return planChosenBatchLine(product, item);
+        }
         List<InventoryBatch> batches = inventoryBatchRepository.findAvailableBatchesForSale(product.getId());
         if (batches.isEmpty()) {
             throw new BusinessException(product.getName() + " is out of stock.");
@@ -903,6 +968,36 @@ public class SalesService {
             throw new BusinessException(product.getName() + " has only " + totalAvailable + " available.");
         }
         return toLinePlan(product, item, drawFifo(product, item.getQuantity(), batches));
+    }
+
+    // Plan a line drawn entirely from one chosen batch (products whose batches differ in price).
+    private LinePlan planChosenBatchLine(Product product, CreateSaleOrderItemRequest item) {
+        InventoryBatch batch = inventoryBatchRepository.findByIdForSale(item.getBatchId())
+                .orElseThrow(() -> new BusinessException("The selected batch of " + product.getName() + " was not found."));
+        if (!batch.getProduct().getId().equals(product.getId())) {
+            throw new BusinessException("Batch " + batch.getBatchNumber() + " does not belong to " + product.getName() + ".");
+        }
+        BigDecimal available = batch.getStatus() == InventoryBatchStatus.ACTIVE ? batch.getQuantityAvailable() : BigDecimal.ZERO;
+        if (available.compareTo(item.getQuantity()) < 0) {
+            throw new BusinessException("Batch " + batch.getBatchNumber() + " of " + product.getName()
+                    + " has only " + available.stripTrailingZeros().toPlainString() + " available.");
+        }
+        BatchDraw draw = new BatchDraw(batch, item.getQuantity(), batch.getUnitCost(), batchPrice(product, batch));
+        return toLinePlan(product, item, List.of(draw));
+    }
+
+    // One product can't mix FIFO lines with chosen-batch lines — both could draw the same stock.
+    private void rejectMixedBatchChoice(List<CreateSaleOrderItemRequest> items) throws BadRequestException {
+        Set<UUID> fifoProducts = new HashSet<>();
+        Set<UUID> chosenProducts = new HashSet<>();
+        for (CreateSaleOrderItemRequest item : items) {
+            if (item.getBatchId() != null) chosenProducts.add(item.getProductId());
+            else if (item.getBatchNumber() == null) fifoProducts.add(item.getProductId());
+        }
+        fifoProducts.retainAll(chosenProducts);
+        if (!fifoProducts.isEmpty()) {
+            throw new BadRequestException("Choose a batch for every line of a product whose batches have different prices.");
+        }
     }
 
     // Pull the requested quantity from FIFO batches, capturing each draw's price and cost.
@@ -988,6 +1083,8 @@ public class SalesService {
                 .discount(plan.discount)
                 .sellingPrice(plan.avgPrice)
                 .unitPrice(avgUnitCost(plan))
+                // A chosen-batch line records its batch; FIFO lines span batches (see inventory transactions).
+                .batchNumber(plan.item.getBatchId() != null ? plan.draws.get(0).batch().getBatchNumber() : null)
                 .lineTotal(plan.gross.subtract(plan.discount).setScale(2, RoundingMode.HALF_UP))
                 .build();
         orderItem = salesOrderItemRepository.save(orderItem);

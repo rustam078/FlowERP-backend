@@ -4,6 +4,7 @@ import com.skr.erp.common.constants.PaymentMode;
 import com.skr.erp.common.constants.PaymentStatus;
 import com.skr.erp.common.response.PageResponse;
 import com.skr.erp.dto.request.CreateSaleOrderRequest;
+import com.skr.erp.dto.request.SettleCustomerDueRequest;
 import com.skr.erp.dto.response.*;
 import com.skr.erp.report.ReportDownload;
 import com.skr.erp.service.ReportService;
@@ -73,6 +74,12 @@ public class SalesController {
     @GetMapping("/customer/outstanding")
     public ResponseEntity<CustomerOutstandingResponse> getCustomerOutstanding(@RequestParam String mobile) {
         return ResponseEntity.ok(salesService.getCustomerOutstanding(mobile));
+    }
+
+    // Settle a customer's previous dues without a new sale (allocated oldest invoice first).
+    @PostMapping("/customer/settle-due")
+    public ResponseEntity<SettleCustomerDueResponse> settleCustomerDue(@Valid @RequestBody SettleCustomerDueRequest request) {
+        return ResponseEntity.ok(salesService.settleCustomerDue(request));
     }
 
     @GetMapping("/customer/history")

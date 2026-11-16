@@ -22,6 +22,7 @@ import java.util.TreeMap;
 public class DashboardService {
 
     private final SalesOrderRepository salesOrderRepository;
+    private final CustomerPaymentRepository customerPaymentRepository;
     private final SalesOrderItemRepository salesOrderItemRepository;
     private final ProductionEntryDetailRepository productionEntryDetailRepository;
     private final InvestmentRepository investmentRepository;
@@ -85,7 +86,8 @@ public class DashboardService {
         long salesCount = lng(salesAgg[0]);
         BigDecimal salesRevenue = bd(salesAgg[1]);
         BigDecimal salesDiscount = bd(salesAgg[2]);
-        BigDecimal salesReceived = bd(salesAgg[3]); // actual cash tendered (may exceed revenue, clears old dues)
+        // Checkout cash (may exceed revenue, clears old dues) plus cash from due settlements in the period.
+        BigDecimal salesReceived = bd(salesAgg[3]).add(customerPaymentRepository.sumSettlements(null, start, end, null, null));
         BigDecimal salesDue = bd(salesAgg[4]);      // per-invoice due, floored at 0 in SQL
         BigDecimal avgOrderValue = salesCount > 0
                                    ? salesRevenue.divide(BigDecimal.valueOf(salesCount), 2, RoundingMode.HALF_UP)

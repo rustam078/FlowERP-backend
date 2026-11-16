@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
@@ -25,4 +26,23 @@ public interface CustomerPaymentRepository extends JpaRepository<CustomerPayment
     // Payments made at one invoice's checkout that cleared OTHER (older) invoices — the previous-due breakdown.
     @Query("SELECT p FROM CustomerPayment p JOIN FETCH p.salesOrder s WHERE p.referenceInvoiceNo = :invoiceNo ORDER BY s.createdAt ASC")
     List<CustomerPayment> findByReferenceInvoiceNo(@Param("invoiceNo") String invoiceNo);
+
+    // Rows of one payment event (oldest invoice first) — used to answer a repeated settlement request.
+    @Query("SELECT p FROM CustomerPayment p JOIN FETCH p.salesOrder s WHERE p.paymentGroupId = :groupId ORDER BY s.createdAt ASC")
+    List<CustomerPayment> findByPaymentGroupId(@Param("groupId") UUID groupId);
+
+    // Cash from due settlements (payments made after the invoice's own checkout, not via a later sale) in a period.
+    @Query(value = """
+                SELECT COALESCE(SUM(p.amount), 0) FROM customer_payment p JOIN sales_order s ON s.id = p.sales_order_id
+                WHERE p.reference_invoice_no IS NULL
+                  AND p.created_at > s.created_at + INTERVAL '5 seconds'
+                  AND (CAST(:start AS timestamp) IS NULL OR p.created_at >= :start)
+                  AND (CAST(:end AS timestamp) IS NULL OR p.created_at < :end)
+                  AND (CAST(:search AS text) IS NULL OR LOWER(s.invoice_no) LIKE :search
+                       OR LOWER(s.customer_name) LIKE :search OR LOWER(s.customer_mobile) LIKE :search)
+                  AND (CAST(:mode AS text) IS NULL OR p.mode = :mode)
+                  AND (CAST(:status AS text) IS NULL OR s.payment_status = :status)
+            """, nativeQuery = true)
+    BigDecimal sumSettlements(@Param("search") String search, @Param("start") LocalDateTime start,
+                              @Param("end") LocalDateTime end, @Param("mode") String mode, @Param("status") String status);
 }

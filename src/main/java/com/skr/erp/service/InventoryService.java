@@ -268,11 +268,15 @@ public class InventoryService {
     /** FIFO available batches for the sale form, each with its effective selling price. */
     @Transactional(readOnly = true)
     public List<SaleBatchResponse> getSaleBatches(UUID productId) {
+        BigDecimal productPrice = getCurrentSalePrice(productId); // fallback for lots without their own price
         return inventoryBatchRepository.findAvailableBatchesForSalePreview(productId).stream()
                 .map(b -> SaleBatchResponse.builder()
+                        .batchId(b.getId())
                         .batchNumber(b.getBatchNumber())
+                        .receivedDate(b.getReceivedDate())
                         .quantityAvailable(b.getQuantityAvailable())
-                        .sellingPrice(b.getSellingPrice() != null ? b.getSellingPrice() : getCurrentSalePrice(productId))
+                        .mrp(b.getSellingPrice())
+                        .sellingPrice(b.getSellingPrice() != null ? b.getSellingPrice() : productPrice)
                         .unitCost(b.getUnitCost())
                         .build())
                 .toList();

@@ -362,7 +362,9 @@ public class PayslipGenerationService {
         for (EmployeeAttendance a : inputs.leaveByMonth().getOrDefault(month, List.of())) {
             LocalDate d = a.getDate();
             boolean counted = !d.isBefore(window.from()) && !d.isAfter(window.to()) && !isInactive(inputs.spells(), d);
-            if (counted) days += a.getStatus() == AttendanceStatus.HALF_DAY ? 0.5 : 1.0;
+            if (!counted) continue;
+            if (a.getStatus() == AttendanceStatus.ABSENT) days += 1.0;
+            else if (a.getStatus() == AttendanceStatus.HALF_DAY) days += 0.5;
         }
         return BigDecimal.valueOf(days).setScale(1, RoundingMode.HALF_UP);
     }
