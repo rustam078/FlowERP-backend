@@ -1,6 +1,7 @@
 package com.skr.erp.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.skr.erp.audit.AuditRequestFilter;
 import com.skr.erp.common.constants.Role;
 import com.skr.erp.entity.SystemSetting;
 import com.skr.erp.entity.UserSession;
@@ -18,6 +19,7 @@ import org.springframework.web.servlet.HandlerInterceptor;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 // Authentication + RBAC without Spring Security. Every API call carries a session token
@@ -29,6 +31,7 @@ public class PermissionInterceptor implements HandlerInterceptor {
 
     private static final String BEARER = "Bearer ";
     private static final String ROLE_PERMISSIONS_KEY = "ROLE_PERMISSIONS";
+    private static final Set<String> SUPER_ADMIN_SEGMENTS = Set.of("portfolios", "audit-logs");
 
     private final SessionService sessionService;
     private final SystemSettingRepository systemSettingRepository;
@@ -42,6 +45,7 @@ public class PermissionInterceptor implements HandlerInterceptor {
 
         UserSession session = sessionService.resolve(bearerToken(request));
         CurrentUser user = toCurrentUser(session);
+        request.setAttribute(AuditRequestFilter.CURRENT_USER_ATTRIBUTE, user); // who, for the audit log (even if refused)
         verifyIdentityParams(request, user);
         // Set before authorize: permissions are per-portfolio settings, read through the portfolio filter.
         RequestContext.set(user);
@@ -73,7 +77,8 @@ public class PermissionInterceptor implements HandlerInterceptor {
 
     private CurrentUser toCurrentUser(UserSession session) {
         UUID portfolioId = session.getActivePortfolio() != null ? session.getActivePortfolio().getId() : null;
-        return new CurrentUser(session.getUser().getId(), session.getUser().getRole(), portfolioId, session.getTokenHash());
+        return new CurrentUser(session.getUser().getId(), session.getUser().getEmail(), session.getUser().getRole(),
+                portfolioId, session.getTokenHash());
     }
 
     // userId / portfolioId sent by the client must be exactly the session's — never trusted on their own.
@@ -89,17 +94,17 @@ public class PermissionInterceptor implements HandlerInterceptor {
     }
 
     private void authorize(CurrentUser user, String method, String path) {
-        String segment = firstSegment(path);
+        String segment = ApiModules.firstSegment(path);
         if ("auth".equals(segment)) return; // own session: logout, me, switch portfolio, change password
-        if ("portfolios".equals(segment)) {
-            // Portfolio management: SUPER_ADMIN only, works with or without a portfolio selected.
-            if (!Role.SUPER_ADMIN.equals(user.role())) throw new ForbiddenException("Only a super admin can manage portfolios");
+        if (SUPER_ADMIN_SEGMENTS.contains(segment)) {
+            // Portfolio management and audit logs: SUPER_ADMIN only, with or without a portfolio selected.
+            if (!Role.SUPER_ADMIN.equals(user.role())) throw new ForbiddenException("Only a super admin can do this");
             return;
         }
         if (user.portfolioId() == null) throw new ForbiddenException("Select a portfolio first");
         if (Role.hasFullAccess(user.role())) return;
 
-        String module = moduleForPath(path);
+        String module = ApiModules.moduleForPath(path);
         String action = actionForMethod(method);
         if ("users".equals(segment)) throw new ForbiddenException("You do not have permission to manage users");
         // Settings are read app-wide to bootstrap the UI (currency, menu, permissions); writes are gated.
@@ -133,25 +138,4 @@ public class PermissionInterceptor implements HandlerInterceptor {
         };
     }
 
-    private String firstSegment(String path) {
-        // path like /api/<segment>/...
-        String p = path.startsWith("/api/") ? path.substring(5) : path;
-        int slash = p.indexOf('/');
-        return slash >= 0 ? p.substring(0, slash) : p;
-    }
-
-    private String moduleForPath(String path) {
-        return switch (firstSegment(path)) {
-            case "sales", "customers", "qr" -> "sales";
-            case "inventory" -> "inventory";
-            case "products", "product-material-cost" -> "products";
-            case "investments", "vendors" -> "investment";
-            case "production" -> "production";
-            case "employees" -> "employees";
-            case "dashboard" -> "dashboard";
-            case "revenue" -> "revenue";
-            case "settings", "users" -> "settings";
-            default -> null;
-        };
-    }
 }

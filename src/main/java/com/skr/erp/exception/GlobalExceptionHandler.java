@@ -1,6 +1,8 @@
 package com.skr.erp.exception;
 
+import com.skr.erp.audit.AuditRequestFilter;
 import com.skr.erp.common.response.ErrorResponse;
+import org.slf4j.MDC;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -38,6 +40,7 @@ public class GlobalExceptionHandler {
                 .success(false)
                 .message(ex.getMessage())
                 .timestamp(LocalDateTime.now())
+                .requestId(MDC.get(AuditRequestFilter.REQUEST_ID_KEY))
                 .build();
     }
 
@@ -49,6 +52,7 @@ public class GlobalExceptionHandler {
                 .success(false)
                 .message(ex.getMessage())
                 .timestamp(LocalDateTime.now())
+                .requestId(MDC.get(AuditRequestFilter.REQUEST_ID_KEY))
                 .build();
     }
 
@@ -63,6 +67,7 @@ public class GlobalExceptionHandler {
                 .success(false)
                 .message(message)
                 .timestamp(LocalDateTime.now())
+                .requestId(MDC.get(AuditRequestFilter.REQUEST_ID_KEY))
                 .build();
     }
 
@@ -73,6 +78,7 @@ public class GlobalExceptionHandler {
 
         ErrorResponse response = ErrorResponse.builder()
                 .timestamp(LocalDateTime.now())
+                .requestId(MDC.get(AuditRequestFilter.REQUEST_ID_KEY))
                 .success(false)
                 .message(ex.getMessage())
                 .build();

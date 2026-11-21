@@ -1,5 +1,6 @@
 package com.skr.erp.controller;
 
+import com.skr.erp.audit.Audit;
 import com.skr.erp.dto.request.CreatePortfolioRequest;
 import com.skr.erp.dto.response.PortfolioResponse;
 import com.skr.erp.service.PortfolioService;
@@ -41,17 +42,20 @@ public class PortfolioController {
         return ResponseEntity.ok(Map.of("available", portfolioService.isPrefixAvailable(prefix)));
     }
 
+    @Audit("Portfolio created")
     @PostMapping
     public ResponseEntity<PortfolioResponse> create(@Valid @RequestBody CreatePortfolioRequest request) {
         return ResponseEntity.ok(portfolioService.create(request));
     }
 
+    @Audit("Portfolio status changed")
     @PatchMapping("/{id}/status")
     public ResponseEntity<PortfolioResponse> setStatus(@PathVariable UUID id, @RequestParam boolean active) {
         return ResponseEntity.ok(portfolioService.setActive(id, active));
     }
 
     // Soft delete; confirmName must equal the portfolio's name.
+    @Audit("Portfolio deleted")
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable UUID id, @RequestParam String confirmName) {
         portfolioService.delete(id, confirmName);

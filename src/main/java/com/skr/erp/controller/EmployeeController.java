@@ -1,5 +1,6 @@
 package com.skr.erp.controller;
 
+import com.skr.erp.audit.Audit;
 import com.skr.erp.common.response.CommonResponse;
 import com.skr.erp.dto.request.CreateEmployeeRequest;
 import com.skr.erp.dto.request.MarkAttendanceRequest;
@@ -117,6 +118,7 @@ public class EmployeeController {
                 .data(employeeService.getAttendance(id, fromDate, toDate)).build();
     }
 
+    @Audit("Attendance marked")
     @PostMapping("/{id}/attendance")
     public CommonResponse<AttendanceResponse> markAttendance(@PathVariable UUID id, @Valid @RequestBody MarkAttendanceRequest request) {
         return CommonResponse.<AttendanceResponse>builder().success(true)
@@ -124,6 +126,7 @@ public class EmployeeController {
                 .data(employeeService.markAttendance(id, request)).build();
     }
 
+    @Audit("Attendance marked for a date range")
     @PostMapping("/{id}/attendance/range")
     public CommonResponse<List<AttendanceResponse>> markAttendanceRange(@PathVariable UUID id, @Valid @RequestBody MarkAttendanceRangeRequest request) {
         return CommonResponse.<List<AttendanceResponse>>builder().success(true)
@@ -131,6 +134,7 @@ public class EmployeeController {
                 .data(employeeService.markAttendanceRange(id, request)).build();
     }
 
+    @Audit("Attendance removed")
     @DeleteMapping("/{id}/attendance")
     public CommonResponse<String> clearAttendance(@PathVariable UUID id, @RequestParam LocalDate date) {
         employeeService.clearAttendance(id, date);
@@ -170,6 +174,7 @@ public class EmployeeController {
         return ReportDownload.pdf(pdf, "payslip.pdf");
     }
 
+    @Audit("Employee payment / advance recorded")
     @PostMapping("/{id}/ledger")
     public CommonResponse<PayrollResponse> recordLedger(@PathVariable UUID id, @Valid @RequestBody RecordLedgerRequest request) {
         return CommonResponse.<PayrollResponse>builder().success(true)
@@ -177,6 +182,7 @@ public class EmployeeController {
                 .data(employeeLedgerService.recordEntry(id, request)).build();
     }
 
+    @Audit("Employee payment entry deleted")
     @DeleteMapping("/{id}/ledger/{entryId}")
     public CommonResponse<PayrollResponse> deleteLedger(@PathVariable UUID id, @PathVariable UUID entryId) {
         return CommonResponse.<PayrollResponse>builder().success(true)
@@ -185,6 +191,7 @@ public class EmployeeController {
     }
 
     // Give an advance to several employees at once (bulk screen).
+    @Audit("Bulk advance given")
     @PostMapping("/advances/bulk")
     public CommonResponse<Integer> bulkAdvance(@Valid @RequestBody BulkAdvanceRequest request) {
         return CommonResponse.<Integer>builder().success(true)

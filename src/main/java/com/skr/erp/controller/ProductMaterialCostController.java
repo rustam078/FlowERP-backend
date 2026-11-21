@@ -1,5 +1,6 @@
 package com.skr.erp.controller;
 
+import com.skr.erp.audit.Audit;
 import com.skr.erp.common.response.CommonResponse;
 import com.skr.erp.dto.request.CreateProductMaterialCostRequest;
 import com.skr.erp.dto.request.UpdateMaterialCostRequest;
@@ -22,6 +23,7 @@ public class ProductMaterialCostController {
 
     private final ProductMaterialCostService productMaterialCostService;
 
+    @Audit("Cost / selling price added")
     @PostMapping("/{productId}")
     public CommonResponse<ProductMaterialCostResponse> addMaterialCost(@PathVariable UUID productId, @Valid @RequestBody CreateProductMaterialCostRequest request) {
         return CommonResponse.<ProductMaterialCostResponse>builder().success(true).message("Material cost added successfully")
@@ -35,6 +37,7 @@ public class ProductMaterialCostController {
                 .data(productMaterialCostService.getMaterialCosts(productId)).build();
     }
 
+    @Audit("Cost / selling price updated")
     @PutMapping("/{id}")
     public CommonResponse<ProductMaterialCostResponse> update(@PathVariable UUID id, @Valid @RequestBody UpdateMaterialCostRequest request) {
         return CommonResponse.<ProductMaterialCostResponse>builder().success(true).message("Material cost updated successfully")
@@ -48,6 +51,7 @@ public class ProductMaterialCostController {
                 .data(productMaterialCostService.getMaterialCostByDate(productId, date)).build();
     }
 
+    @Audit("Cost / selling price deleted")
     @DeleteMapping("/{id}")
     public CommonResponse<Void> delete(@PathVariable UUID id) {
         productMaterialCostService.delete(id);

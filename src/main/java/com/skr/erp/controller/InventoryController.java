@@ -1,5 +1,6 @@
 package com.skr.erp.controller;
 
+import com.skr.erp.audit.Audit;
 import com.skr.erp.common.constants.InventoryBatchStatus;
 import com.skr.erp.common.response.CommonResponse;
 import com.skr.erp.common.response.PageResponse;
@@ -59,6 +60,7 @@ public class InventoryController {
         return ResponseEntity.ok(inventoryService.getLowStockAlerts());
     }
 
+    @Audit("Stock produced")
     @PostMapping("/produce")
     public ResponseEntity<CommonResponse<List<InventoryBatchResponse>>> produce(@Valid @RequestBody ProduceRequest request) {
         List<InventoryBatchResponse> batches = inventoryService.produce(request);
@@ -67,6 +69,7 @@ public class InventoryController {
                 .data(batches).build());
     }
 
+    @Audit("Batch stock adjusted")
     @PatchMapping("/batches/{batchId}/adjust")
     public ResponseEntity<CommonResponse<InventoryBatchResponse>> adjustBatchStock(@PathVariable UUID batchId, @Valid @RequestBody AdjustBatchStockRequest request) {
         InventoryBatchResponse updated = inventoryService.adjustBatchStock(batchId, request);
@@ -75,6 +78,7 @@ public class InventoryController {
                 .data(updated).build());
     }
 
+    @Audit("Product stock adjusted")
     @PatchMapping("/product/{productId}/adjust")
     public ResponseEntity<CommonResponse<InventoryResponse>> adjustProductStock(@PathVariable UUID productId, @Valid @RequestBody AdjustBatchStockRequest request) {
         InventoryResponse updated = inventoryService.adjustProductStock(productId, request);

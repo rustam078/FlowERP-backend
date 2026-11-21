@@ -1,5 +1,6 @@
 package com.skr.erp.controller;
 
+import com.skr.erp.audit.Audit;
 import com.skr.erp.common.constants.PaymentMode;
 import com.skr.erp.common.constants.PaymentStatus;
 import com.skr.erp.common.response.PageResponse;
@@ -65,6 +66,7 @@ public class SalesController {
         return ResponseEntity.ok(salesService.getRecentSales());
     }
 
+    @Audit("Sale created")
     @PostMapping
     public ResponseEntity<CreateSaleOrderResponse> createSale(@Valid @RequestBody CreateSaleOrderRequest request) throws BadRequestException {
         CreateSaleOrderResponse response = salesService.createSale(request);
@@ -77,6 +79,7 @@ public class SalesController {
     }
 
     // Settle a customer's previous dues without a new sale (allocated oldest invoice first).
+    @Audit("Customer due settled")
     @PostMapping("/customer/settle-due")
     public ResponseEntity<SettleCustomerDueResponse> settleCustomerDue(@Valid @RequestBody SettleCustomerDueRequest request) {
         return ResponseEntity.ok(salesService.settleCustomerDue(request));

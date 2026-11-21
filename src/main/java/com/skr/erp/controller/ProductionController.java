@@ -1,5 +1,6 @@
 package com.skr.erp.controller;
 
+import com.skr.erp.audit.Audit;
 import com.skr.erp.common.response.CommonResponse;
 import com.skr.erp.common.response.PageResponse;
 import com.skr.erp.dto.request.CreateProductionRequest;
@@ -31,6 +32,7 @@ public class ProductionController {
     private final ProductionService productionService;
     private final ReportService reportService;
 
+    @Audit("Production entry created")
     @PostMapping
     public CommonResponse<ProductionResponse> create(@Valid @RequestBody CreateProductionRequest request) {
         return CommonResponse.<ProductionResponse>builder().success(true)
@@ -81,12 +83,14 @@ public class ProductionController {
                 .data(productionService.getById(id)).build();
     }
 
+    @Audit("Production entry updated")
     @PutMapping("/{id}")
     public CommonResponse<ProductionResponse> update(@PathVariable UUID id, @Valid @RequestBody CreateProductionRequest request) {
         return CommonResponse.<ProductionResponse>builder().success(true).message("Production updated successfully")
                 .data(productionService.update(id, request)).build();
     }
 
+    @Audit("Production entry deleted")
     @DeleteMapping("/{id}")
     public CommonResponse<Void> delete(@PathVariable UUID id) {
         productionService.delete(id);

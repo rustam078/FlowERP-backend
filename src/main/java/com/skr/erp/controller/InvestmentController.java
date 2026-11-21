@@ -1,5 +1,6 @@
 package com.skr.erp.controller;
 
+import com.skr.erp.audit.Audit;
 import com.skr.erp.common.constants.InvestmentType;
 import com.skr.erp.common.response.CommonResponse;
 import com.skr.erp.dto.request.AddPaymentRequest;
@@ -29,6 +30,7 @@ public class InvestmentController {
 
     private final InvestmentService investmentService;
 
+    @Audit("Investment created")
     @PostMapping
     public CommonResponse<InvestmentResponse> create(@Valid @RequestBody CreateInvestmentRequest request) {
 
@@ -77,6 +79,7 @@ public class InvestmentController {
                 .data(investmentService.getById(id)).build();
     }
 
+    @Audit("Investment deleted")
     @DeleteMapping("/{id}")
     public CommonResponse<Void> delete(@PathVariable UUID id) {
         investmentService.delete(id);
@@ -85,6 +88,7 @@ public class InvestmentController {
     }
 
     // ── Payments ──────────────────────────────────
+    @Audit("Investment payment added")
     @PostMapping("/{id}/payments")
     public CommonResponse<InvestmentDetailsResponse> addPayment(@PathVariable UUID id, @Valid @RequestBody AddPaymentRequest request) {
         return CommonResponse.<InvestmentDetailsResponse>builder().success(true)

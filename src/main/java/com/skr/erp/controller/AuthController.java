@@ -1,5 +1,6 @@
 package com.skr.erp.controller;
 
+import com.skr.erp.audit.Audit;
 import com.skr.erp.common.response.CommonResponse;
 import com.skr.erp.dto.request.ChangePasswordRequest;
 import com.skr.erp.dto.request.LoginRequest;
@@ -18,6 +19,7 @@ public class AuthController {
 
     private final AuthService authService;
 
+    @Audit("Login")
     @PostMapping("/login")
     public CommonResponse<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
         LoginResponse response = authService.login(request);
@@ -46,6 +48,7 @@ public class AuthController {
         return CommonResponse.<LoginResponse>builder().success(true).data(authService.switchPortfolio(request)).build();
     }
 
+    @Audit("Own password changed")
     @PostMapping("/change-password")
     public CommonResponse<Void> changePassword(@Valid @RequestBody ChangePasswordRequest request) {
         authService.changePassword(request);

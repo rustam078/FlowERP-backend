@@ -1,5 +1,6 @@
 package com.skr.erp.controller;
 
+import com.skr.erp.audit.Audit;
 import com.skr.erp.dto.request.SystemSettingRequest;
 import com.skr.erp.dto.response.SystemSettingResponse;
 import com.skr.erp.service.SystemSettingService;
@@ -27,6 +28,7 @@ public class SystemSettingController {
         return ResponseEntity.ok(service.get(key));
     }
 
+    @Audit("Setting changed")
     @PutMapping("/{key}")
     public ResponseEntity<SystemSettingResponse> update(@PathVariable String key, @RequestBody SystemSettingRequest request) {
         return ResponseEntity.ok(service.update(key, request.getThreshold()));

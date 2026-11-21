@@ -22,12 +22,12 @@ public class ProductResponse {
     private Integer totalPieceCodes;
     private Integer activePieceCodes;
     private Integer inactivePieceCodes;
-    // Current effective selling price (null when none configured).
+    // Price the next sale will use: the oldest in-stock batch's price (FIFO); base price when out of stock.
     private BigDecimal sellingPrice;
     // Total in-stock quantity across batches (for the product card).
     private Integer availableQty;
-    // Distinct in-stock batch selling prices (for the card price tooltip when they vary).
-    private List<BigDecimal> batchSalePrices;
+    // In-stock prices in selling order with quantities (card tooltip: what applies after the current stock runs out).
+    private List<StockPriceResponse> stockPrices;
     // True when the product has an uploaded image (fetch it at /api/products/{id}/image).
     private Boolean hasImage;
     private LocalDateTime createdAt;

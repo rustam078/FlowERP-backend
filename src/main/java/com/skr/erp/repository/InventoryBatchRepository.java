@@ -83,15 +83,6 @@ public interface InventoryBatchRepository extends JpaRepository<InventoryBatch, 
     @Query("SELECT COALESCE(SUM(b.quantityReceived),0), COALESCE(SUM(b.quantityAvailable),0), COALESCE(SUM(b.quantityAvailable * b.unitCost),0) FROM InventoryBatch b WHERE b.product.id = :productId")
     List<Object[]> aggregateByProductId(@Param("productId") UUID productId);
 
-    // Quantity-weighted selling price per product from in-stock batches: [productId, SUM(available*sellingPrice), SUM(available)].
-    @Query("""
-            SELECT b.product.id, COALESCE(SUM(b.quantityAvailable * b.sellingPrice),0), COALESCE(SUM(b.quantityAvailable),0)
-            FROM InventoryBatch b
-            WHERE b.quantityAvailable > 0 AND b.sellingPrice IS NOT NULL
-            GROUP BY b.product.id
-            """)
-    List<Object[]> weightedAvgSellingPrices();
-
     // Total in-stock quantity per product (all available batches, regardless of price): [productId, SUM(available)].
     @Query("""
             SELECT b.product.id, COALESCE(SUM(b.quantityAvailable),0)
@@ -101,14 +92,16 @@ public interface InventoryBatchRepository extends JpaRepository<InventoryBatch, 
             """)
     List<Object[]> availableQtyByProduct();
 
-    // Distinct in-stock batch selling prices per product (for the card price tooltip): [productId, sellingPrice].
+    // In-stock batches of every product in the order sales take them (oldest first): [productId, sellingPrice, available].
+    // Drives the product card: current price = oldest batch, tooltip = the next prices in order.
     @Query("""
-            SELECT DISTINCT b.product.id, b.sellingPrice
+            SELECT b.product.id, b.sellingPrice, b.quantityAvailable
             FROM InventoryBatch b
-            WHERE b.quantityAvailable > 0 AND b.sellingPrice IS NOT NULL
-            ORDER BY b.product.id, b.sellingPrice
+            WHERE b.quantityAvailable > 0
+            AND b.status = com.skr.erp.common.constants.InventoryBatchStatus.ACTIVE
+            ORDER BY b.product.id, b.receivedDate ASC, b.createdAt ASC
             """)
-    List<Object[]> distinctInStockSalePrices();
+    List<Object[]> inStockBatchPricesFifo();
 
     @Query("SELECT COALESCE(SUM(b.quantityReceived),0), COALESCE(SUM(b.quantityAvailable),0), COALESCE(SUM(b.quantityAvailable * b.unitCost),0) FROM InventoryBatch b WHERE b.product.id = :productId AND b.receivedDate BETWEEN :fromDate AND :toDate")
     List<Object[]> aggregateByProductIdAndReceivedDateBetween(@Param("productId") UUID productId, @Param("fromDate") LocalDate fromDate, @Param("toDate") LocalDate toDate);
@@ -132,7 +125,7 @@ public interface InventoryBatchRepository extends JpaRepository<InventoryBatch, 
             WHERE b.product.id = :productId
             AND b.quantityAvailable > 0
             AND b.status = com.skr.erp.common.constants.InventoryBatchStatus.ACTIVE
-            ORDER BY b.receivedDate ASC
+            ORDER BY b.receivedDate ASC, b.createdAt ASC
             """)
     List<InventoryBatch> findAvailableBatchesForSale(UUID productId);
 
@@ -149,7 +142,7 @@ public interface InventoryBatchRepository extends JpaRepository<InventoryBatch, 
             WHERE b.product.id = :productId
             AND b.quantityAvailable > 0
             AND b.status = com.skr.erp.common.constants.InventoryBatchStatus.ACTIVE
-            ORDER BY b.receivedDate ASC
+            ORDER BY b.receivedDate ASC, b.createdAt ASC
             """)
     List<InventoryBatch> findAvailableBatchesForSalePreview(UUID productId);
 

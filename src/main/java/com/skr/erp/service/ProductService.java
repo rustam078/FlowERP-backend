@@ -6,6 +6,7 @@ import com.skr.erp.dto.request.CreatePieceCodeRequest;
 import com.skr.erp.dto.request.CreateProductRateRequest;
 import com.skr.erp.dto.request.CreateProductRequest;
 import com.skr.erp.dto.request.EnableManufacturingRequest;
+import com.skr.erp.dto.response.StockPriceResponse;
 import com.skr.erp.dto.response.*;
 import com.skr.erp.entity.Product;
 import com.skr.erp.entity.ProductMaterialCost;
@@ -18,7 +19,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -132,26 +132,14 @@ public class ProductService {
         // One query → which products have an image (avoids N+1).
         Set<UUID> productsWithImage = new HashSet<>(productImageRepository.findAllProductIds());
 
-        // One query → weighted-avg batch price (fallback for purchased products with no configured price).
-        Map<UUID, BigDecimal> avgBatchSalePrice = new HashMap<>();
-        for (Object[] row : inventoryBatchRepository.weightedAvgSellingPrices()) {
-            long qty = ((Number) row[2]).longValue();
-            if (qty > 0) {
-                avgBatchSalePrice.put((UUID) row[0], ((BigDecimal) row[1]).divide(BigDecimal.valueOf(qty), 0, RoundingMode.HALF_UP));
-            }
-        }
-
         // One query → total in-stock qty per product (all available batches).
         Map<UUID, Integer> availableQtyByProduct = new HashMap<>();
         for (Object[] row : inventoryBatchRepository.availableQtyByProduct()) {
             availableQtyByProduct.put((UUID) row[0], ((Number) row[1]).intValue());
         }
 
-        // One query → distinct in-stock batch prices per product (for the card price tooltip).
-        Map<UUID, List<BigDecimal>> batchPricesByProduct = new HashMap<>();
-        for (Object[] row : inventoryBatchRepository.distinctInStockSalePrices()) {
-            batchPricesByProduct.computeIfAbsent((UUID) row[0], k -> new ArrayList<>()).add((BigDecimal) row[1]);
-        }
+        // One query → in-stock prices per product in selling (FIFO) order, for the card price + tooltip.
+        Map<UUID, List<StockPriceResponse>> stockPricesByProduct = fifoStockPrices(salePriceByProduct);
 
         // One query → piece-code total/active counts per product (avoids 3 counts per product).
         Map<UUID, int[]> codeCountsByProduct = new HashMap<>();
@@ -175,14 +163,38 @@ public class ProductService {
                     .totalPieceCodes(totalCodes)
                     .activePieceCodes(activeCodes)
                     .inactivePieceCodes(inactiveCodes)
-                    // Configured material-cost price first; else the weighted-avg batch price (purchased stock).
-                    .sellingPrice(salePriceByProduct.getOrDefault(product.getId(), avgBatchSalePrice.get(product.getId())))
+                    // Price the next sale uses: oldest in-stock batch (FIFO); the base price when out of stock.
+                    .sellingPrice(currentPrice(stockPricesByProduct.get(product.getId()), salePriceByProduct.get(product.getId())))
                     .availableQty(availableQtyByProduct.getOrDefault(product.getId(), 0))
-                    .batchSalePrices(batchPricesByProduct.getOrDefault(product.getId(), List.of()))
+                    .stockPrices(stockPricesByProduct.getOrDefault(product.getId(), List.of()))
                     .hasImage(productsWithImage.contains(product.getId()))
                     .createdAt(product.getCreatedAt())
                     .updatedAt(product.getUpdatedAt()).build();
         }).toList();
+    }
+
+    // In-stock batches grouped per product in FIFO order; a batch without its own price sells at the base
+    // price (same rule as a sale). Neighbouring batches with the same price are merged into one step.
+    private Map<UUID, List<StockPriceResponse>> fifoStockPrices(Map<UUID, BigDecimal> basePrices) {
+        Map<UUID, List<StockPriceResponse>> result = new HashMap<>();
+        for (Object[] row : inventoryBatchRepository.inStockBatchPricesFifo()) {
+            UUID productId = (UUID) row[0];
+            BigDecimal price = row[1] != null ? (BigDecimal) row[1] : basePrices.get(productId);
+            if (price == null) continue; // no batch price and no base price: nothing to show
+            List<StockPriceResponse> steps = result.computeIfAbsent(productId, k -> new ArrayList<>());
+            StockPriceResponse last = steps.isEmpty() ? null : steps.get(steps.size() - 1);
+            BigDecimal qty = (BigDecimal) row[2];
+            if (last != null && last.price().compareTo(price) == 0) {
+                steps.set(steps.size() - 1, new StockPriceResponse(price, last.quantity().add(qty)));
+            } else {
+                steps.add(new StockPriceResponse(price, qty));
+            }
+        }
+        return result;
+    }
+
+    private static BigDecimal currentPrice(List<StockPriceResponse> steps, BigDecimal basePrice) {
+        return steps != null && !steps.isEmpty() ? steps.get(0).price() : basePrice;
     }
 
     public ProductRateResponse addRate(UUID productId, CreateProductRateRequest request) {

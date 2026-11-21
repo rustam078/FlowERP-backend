@@ -1,5 +1,6 @@
 package com.skr.erp.controller;
 
+import com.skr.erp.audit.Audit;
 import com.skr.erp.common.response.CommonResponse;
 import com.skr.erp.dto.request.CreateProductRateRequest;
 import com.skr.erp.dto.request.CreateProductRequest;
@@ -54,6 +55,7 @@ public class ProductController {
                 .data(productService.enableManufacturing(productId, request)).build();
     }
 
+    @Audit("Piece rate changed")
     @PostMapping("/{productId}/rates")
     public CommonResponse<ProductRateResponse> addRate(@PathVariable UUID productId, @Valid @RequestBody CreateProductRateRequest request) {
         return CommonResponse.<ProductRateResponse>builder().success(true)
