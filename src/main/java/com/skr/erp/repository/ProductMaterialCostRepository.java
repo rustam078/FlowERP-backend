@@ -1,6 +1,7 @@
 package com.skr.erp.repository;
 
 import com.skr.erp.entity.ProductMaterialCost;
+import com.skr.erp.security.RequestContext;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -27,7 +28,8 @@ public interface ProductMaterialCostRepository extends JpaRepository<ProductMate
     @Query(value = """
             SELECT *
             FROM product_material_cost
-            WHERE product_id = :productId
+            WHERE portfolio_id =""" + RequestContext.PORTFOLIO_SQL_PARAM + """
+              AND product_id = :productId
             ORDER BY effective_from DESC
             """, nativeQuery = true)
     List<ProductMaterialCost> findAllByProduct(@Param("productId") UUID productId);
@@ -37,7 +39,8 @@ public interface ProductMaterialCostRepository extends JpaRepository<ProductMate
     @Query(value = """
             SELECT DISTINCT ON (product_id) product_id, sale_price
             FROM product_material_cost
-            WHERE effective_from <= CURRENT_DATE AND sale_price IS NOT NULL
+            WHERE portfolio_id =""" + RequestContext.PORTFOLIO_SQL_PARAM + """
+              AND effective_from <= CURRENT_DATE AND sale_price IS NOT NULL
             ORDER BY product_id, effective_from DESC
             """, nativeQuery = true)
     List<Object[]> currentSalePrices();

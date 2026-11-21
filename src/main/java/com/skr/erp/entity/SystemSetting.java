@@ -12,9 +12,9 @@ import lombok.*;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-public class SystemSetting extends BaseEntity {
+public class SystemSetting extends PortfolioScopedEntity {
 
-    @Column(name = "setting_key", nullable = false, unique = true)
+    @Column(name = "setting_key", nullable = false) // unique per portfolio (uk_system_setting_key)
     private String settingKey;
 
     @Column(name = "setting_value", nullable = false)

@@ -9,7 +9,7 @@ import lombok.Setter;
 @Table(name = "product")
 @Getter
 @Setter
-public class Product extends BaseEntity {
+public class Product extends PortfolioScopedEntity {
 
     @Column(nullable = false, unique = true)
     private String name;

@@ -14,7 +14,7 @@ import lombok.NoArgsConstructor;
 @Data
 @AllArgsConstructor
 @NoArgsConstructor
-public class Customer extends BaseEntity {
+public class Customer extends PortfolioScopedEntity {
 
     @Column(nullable = false)
     private String name;

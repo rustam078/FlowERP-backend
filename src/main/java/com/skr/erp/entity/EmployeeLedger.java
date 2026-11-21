@@ -16,7 +16,7 @@ import java.time.LocalDate;
 @Table(name = "employee_ledger")
 @Getter
 @Setter
-public class EmployeeLedger extends BaseEntity {
+public class EmployeeLedger extends PortfolioScopedEntity {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "employee_id", nullable = false)

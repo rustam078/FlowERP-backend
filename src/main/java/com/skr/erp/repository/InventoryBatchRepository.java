@@ -36,15 +36,6 @@ public interface InventoryBatchRepository extends JpaRepository<InventoryBatch, 
 
     java.util.Optional<InventoryBatch> findFirstBySourceAndSourceId(String source, UUID sourceId);
 
-    @Query(value = "SELECT nextval('inventory_batch_seq')", nativeQuery = true)
-    Long getNextBatchSequence();
-
-    // Highest numeric part of an existing BT###### batch number (0 when table is empty).
-    @Query(value = "SELECT COALESCE(MAX(CAST(substring(batch_number from 3) AS integer)), 0) FROM inventory_batch WHERE batch_number ~ '^BT[0-9]+$'", nativeQuery = true)
-    long getMaxBatchNumberValue();
-
-    @Query(value = "SELECT setval('inventory_batch_seq', :value)", nativeQuery = true)
-    long resetBatchSequence(@Param("value") long value);
 
     @Query(value = """
                 SELECT b FROM InventoryBatch b

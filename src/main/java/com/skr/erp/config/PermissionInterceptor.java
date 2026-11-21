@@ -2,12 +2,13 @@ package com.skr.erp.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.skr.erp.common.constants.Role;
-import com.skr.erp.entity.AppUser;
 import com.skr.erp.entity.SystemSetting;
+import com.skr.erp.entity.UserSession;
 import com.skr.erp.exception.ForbiddenException;
-import com.skr.erp.exception.InvalidCredentialsException;
-import com.skr.erp.repository.AppUserRepository;
 import com.skr.erp.repository.SystemSettingRepository;
+import com.skr.erp.security.CurrentUser;
+import com.skr.erp.security.RequestContext;
+import com.skr.erp.security.SessionService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -15,110 +16,110 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
-// Session-style RBAC without Spring Security. The logged-in user id travels in the
-// X-User-Id header; here we load the user, and for STAFF we check the requested
-// module + action against the ROLE_PERMISSIONS setting. ADMIN always passes.
+// Authentication + RBAC without Spring Security. Every API call carries a session token
+// (Authorization: Bearer ...) plus userId & portfolioId query params. The token alone decides who
+// the caller is and which portfolio they work in; the params must match it or the call is refused.
 @Component
 @RequiredArgsConstructor
 public class PermissionInterceptor implements HandlerInterceptor {
 
-    private static final String USER_HEADER = "X-User-Id";
+    private static final String BEARER = "Bearer ";
     private static final String ROLE_PERMISSIONS_KEY = "ROLE_PERMISSIONS";
 
-    private final AppUserRepository appUserRepository;
+    private final SessionService sessionService;
     private final SystemSettingRepository systemSettingRepository;
     private final ObjectMapper objectMapper;
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
-
         String method = request.getMethod();
         String path = request.getRequestURI();
+        if (isPublic(method, path)) return true;
 
-        // CORS preflight and the login/change-password endpoints are open.
-        if ("OPTIONS".equalsIgnoreCase(method) || path.startsWith("/api/auth/")) {
-            return true;
-        }
-
-        // Product images are public on GET so plain <img src> tags can load them (no auth header).
-        if ("GET".equalsIgnoreCase(method) && path.matches("/api/products/[^/]+/image")) {
-            return true;
-        }
-
-        // Company name is public (shown on the login page before sign-in). Not sensitive.
-        if ("GET".equalsIgnoreCase(method) && path.equals("/api/settings/COMPANY_NAME")) {
-            return true;
-        }
-
-        AppUser user = resolveUser(request);
-
-        // ADMIN has full access.
-        if (Role.ADMIN.equals(user.getRole())) {
-            return true;
-        }
-
-        // Everything below is STAFF (or an unknown role, treated as restricted).
-        String module = moduleForPath(path);
-        String action = actionForMethod(method);
-
-        // User administration is ADMIN-only.
-        if ("users".equals(firstSegment(path))) {
-            throw new ForbiddenException("You do not have permission to manage users");
-        }
-
-        // Reading the settings store (currency, menu, permissions, company info) is needed
-        // app-wide to bootstrap the UI, so any signed-in user may GET it. Writes are gated.
-        if ("settings".equals(module) && "view".equals(action)) {
-            return true;
-        }
-
-        // Unmapped /api paths: allow (no known module to gate).
-        if (module == null) {
-            return true;
-        }
-
-        if (!isAllowed(user.getRole(), module, action)) {
-            throw new ForbiddenException("You do not have permission to " + action + " " + module);
+        UserSession session = sessionService.resolve(bearerToken(request));
+        CurrentUser user = toCurrentUser(session);
+        verifyIdentityParams(request, user);
+        // Set before authorize: permissions are per-portfolio settings, read through the portfolio filter.
+        RequestContext.set(user);
+        try {
+            authorize(user, method, path);
+        } catch (RuntimeException refused) {
+            RequestContext.clear(); // afterCompletion doesn't run for a refused request
+            throw refused;
         }
         return true;
     }
 
-    private AppUser resolveUser(HttpServletRequest request) {
-        String header = request.getHeader(USER_HEADER);
-        if (header == null || header.isBlank()) {
-            throw new InvalidCredentialsException("Not authenticated");
+    @Override
+    public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
+        RequestContext.clear();
+    }
+
+    // Open endpoints: CORS preflight, login, and product images (plain <img src>, looked up by product id).
+    private boolean isPublic(String method, String path) {
+        if ("OPTIONS".equalsIgnoreCase(method)) return true;
+        if ("POST".equalsIgnoreCase(method) && path.equals("/api/auth/login")) return true;
+        return "GET".equalsIgnoreCase(method) && path.matches("/api/products/[^/]+/image");
+    }
+
+    private String bearerToken(HttpServletRequest request) {
+        String header = request.getHeader("Authorization");
+        return header != null && header.startsWith(BEARER) ? header.substring(BEARER.length()).trim() : null;
+    }
+
+    private CurrentUser toCurrentUser(UserSession session) {
+        UUID portfolioId = session.getActivePortfolio() != null ? session.getActivePortfolio().getId() : null;
+        return new CurrentUser(session.getUser().getId(), session.getUser().getRole(), portfolioId, session.getTokenHash());
+    }
+
+    // userId / portfolioId sent by the client must be exactly the session's — never trusted on their own.
+    private void verifyIdentityParams(HttpServletRequest request, CurrentUser user) {
+        if (!user.userId().toString().equals(request.getParameter("userId"))) {
+            throw new ForbiddenException("userId does not match the signed-in user");
         }
-        UUID id;
-        try {
-            id = UUID.fromString(header.trim());
-        } catch (IllegalArgumentException e) {
-            throw new InvalidCredentialsException("Invalid session");
+        String sent = request.getParameter("portfolioId");
+        String expected = user.portfolioId() != null ? user.portfolioId().toString() : null;
+        if (!Objects.equals(sent == null || sent.isBlank() ? null : sent, expected)) {
+            throw new ForbiddenException("portfolioId does not match the signed-in portfolio");
         }
-        AppUser user = appUserRepository.findById(id)
-                .orElseThrow(() -> new InvalidCredentialsException("Session expired, please sign in again"));
-        if (!Boolean.TRUE.equals(user.getActive())) {
-            throw new InvalidCredentialsException("Account is inactive");
+    }
+
+    private void authorize(CurrentUser user, String method, String path) {
+        String segment = firstSegment(path);
+        if ("auth".equals(segment)) return; // own session: logout, me, switch portfolio, change password
+        if ("portfolios".equals(segment)) {
+            // Portfolio management: SUPER_ADMIN only, works with or without a portfolio selected.
+            if (!Role.SUPER_ADMIN.equals(user.role())) throw new ForbiddenException("Only a super admin can manage portfolios");
+            return;
         }
-        return user;
+        if (user.portfolioId() == null) throw new ForbiddenException("Select a portfolio first");
+        if (Role.hasFullAccess(user.role())) return;
+
+        String module = moduleForPath(path);
+        String action = actionForMethod(method);
+        if ("users".equals(segment)) throw new ForbiddenException("You do not have permission to manage users");
+        // Settings are read app-wide to bootstrap the UI (currency, menu, permissions); writes are gated.
+        if (module == null || ("settings".equals(module) && "view".equals(action))) return;
+        if (!isAllowed(user.role(), module, action)) {
+            throw new ForbiddenException("You do not have permission to " + action + " " + module);
+        }
     }
 
     /** Look up ROLE_PERMISSIONS[role][module][action]; fail closed (false) on any problem. */
+    @SuppressWarnings("unchecked")
     private boolean isAllowed(String role, String module, String action) {
         Optional<SystemSetting> setting = systemSettingRepository.findBySettingKey(ROLE_PERMISSIONS_KEY);
-        if (setting.isEmpty() || setting.get().getSettingValue() == null) {
-            return false;
-        }
+        if (setting.isEmpty() || setting.get().getSettingValue() == null) return false;
         try {
             Map<String, Map<String, Map<String, Boolean>>> perms =
                     objectMapper.readValue(setting.get().getSettingValue(), Map.class);
             Map<String, Map<String, Boolean>> rolePerms = perms.get(role);
-            if (rolePerms == null) return false;
-            Map<String, Boolean> modulePerms = rolePerms.get(module);
-            if (modulePerms == null) return false;
-            return Boolean.TRUE.equals(modulePerms.get(action));
+            Map<String, Boolean> modulePerms = rolePerms != null ? rolePerms.get(module) : null;
+            return modulePerms != null && Boolean.TRUE.equals(modulePerms.get(action));
         } catch (Exception e) {
             return false;
         }
@@ -140,8 +141,7 @@ public class PermissionInterceptor implements HandlerInterceptor {
     }
 
     private String moduleForPath(String path) {
-        String seg = firstSegment(path);
-        return switch (seg) {
+        return switch (firstSegment(path)) {
             case "sales", "customers", "qr" -> "sales";
             case "inventory" -> "inventory";
             case "products", "product-material-cost" -> "products";

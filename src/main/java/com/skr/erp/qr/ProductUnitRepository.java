@@ -1,6 +1,7 @@
 package com.skr.erp.qr;
 
 import com.skr.erp.common.constants.ProductUnitStatus;
+import com.skr.erp.security.RequestContext;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -27,7 +28,8 @@ public interface ProductUnitRepository extends JpaRepository<ProductUnit, UUID> 
     /** Units whose serial index falls in [fromIndex, toIndex], in order — used to print a specific chunk. */
     @Query(value = """
         SELECT * FROM product_unit
-        WHERE batch_number = :bn
+        WHERE portfolio_id =""" + RequestContext.PORTFOLIO_SQL_PARAM + """
+          AND batch_number = :bn
           AND CAST(split_part(serial, '-', 2) AS integer) BETWEEN :fromIndex AND :toIndex
         ORDER BY CAST(split_part(serial, '-', 2) AS integer)
         """, nativeQuery = true)
@@ -43,7 +45,8 @@ public interface ProductUnitRepository extends JpaRepository<ProductUnit, UUID> 
     @Query(value = """
         SELECT COALESCE(MAX(CAST(split_part(serial, '-', 2) AS INTEGER)), 0)
         FROM product_unit
-        WHERE batch_number = :batchNumber
+        WHERE portfolio_id =""" + RequestContext.PORTFOLIO_SQL_PARAM + """
+          AND batch_number = :batchNumber
         """, nativeQuery = true)
     int maxSerialIndex(@Param("batchNumber") String batchNumber);
 }

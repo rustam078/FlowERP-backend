@@ -17,7 +17,7 @@ import java.time.LocalDateTime;
         uniqueConstraints = @UniqueConstraint(name = "uq_payslip_emp_period", columnNames = {"employee_id", "period"}))
 @Getter
 @Setter
-public class EmployeePayslip extends BaseEntity {
+public class EmployeePayslip extends PortfolioScopedEntity {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "employee_id", nullable = false)

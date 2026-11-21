@@ -18,7 +18,7 @@ import java.time.LocalDate;
 @Getter
 @Setter
 @BatchSize(size = 100)
-public class Employee extends BaseEntity {
+public class Employee extends PortfolioScopedEntity {
 
     @Column(name = "employee_code", nullable = false, unique = true)
     private String employeeCode;

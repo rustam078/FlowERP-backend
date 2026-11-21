@@ -19,7 +19,7 @@ import com.skr.erp.repository.InventoryBatchRepository;
 import com.skr.erp.repository.ProductMaterialCostRepository;
 import com.skr.erp.repository.ProductRepository;
 import com.skr.erp.repository.SystemSettingRepository;
-import com.skr.erp.util.BatchNumberGenerator;
+import com.skr.erp.util.DocumentNumberGenerator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -39,7 +39,7 @@ import java.util.*;
 public class InventoryService {
 
     private final InventoryBatchRepository inventoryBatchRepository;
-    private final BatchNumberGenerator generateBatchNumber;
+    private final DocumentNumberGenerator documentNumberGenerator;
     private final ProductMaterialCostRepository productMaterialCostRepository;
     private final SystemSettingRepository repository;
     private final ProductRepository productRepository;
@@ -49,7 +49,7 @@ public class InventoryService {
     public void createPurchaseBatch(InvestmentItem investmentItem) {
 
         InventoryBatch batch = new InventoryBatch();
-        batch.setBatchNumber(generateBatchNumber.generate());
+        batch.setBatchNumber(documentNumberGenerator.nextBatchNumber());
         batch.setProduct(investmentItem.getProduct());
         batch.setSource(ProductSource.PURCHASED.name());
         batch.setSourceId(investmentItem.getId());
@@ -68,42 +68,6 @@ public class InventoryService {
         inventoryBatchRepository.save(batch);
     }
 
-    @Transactional
-    public UUID addProductionStock(ProductionEntryDetail productionDetail) {
-        Product product = productionDetail.getProduct();
-        BigDecimal qty = BigDecimal.valueOf(productionDetail.getQuantity());
-        BigDecimal unitCost = getMaterialCost(product);
-        BigDecimal sellingPrice = getCurrentSalePrice(product.getId());
-
-        InventoryBatch batch = null;
-        if (sellingPrice != null) {
-            batch = inventoryBatchRepository
-                    .findMergeableBatches(product.getId(), unitCost, sellingPrice)
-                    .stream().findFirst().orElse(null);
-        }
-
-        if (batch != null) {
-            batch.setQuantityReceived(batch.getQuantityReceived().add(qty));
-            batch.setQuantityAvailable(batch.getQuantityAvailable().add(qty));
-            batch.setTotalCost(batch.getQuantityReceived().multiply(unitCost));
-        } else {
-            batch = new InventoryBatch();
-            batch.setBatchNumber(generateBatchNumber.generate());
-            batch.setProduct(product);
-            batch.setSource(ProductSource.MANUFACTURED.name());
-            batch.setSourceId(productionDetail.getId());
-            batch.setReceivedDate(productionDetail.getProductionEntry().getProductionDate());
-            batch.setQuantityReceived(qty);
-            batch.setQuantityAvailable(qty);
-            batch.setUnitCost(unitCost);
-            batch.setSellingPrice(sellingPrice);
-            batch.setTotalCost(unitCost.multiply(qty));
-            batch.setStatus(InventoryBatchStatus.ACTIVE);
-            batch.setRemarks("Production Entry");
-        }
-        batch = inventoryBatchRepository.save(batch);
-        return batch.getId();
-    }
 
     // Produce finished stock for one or more products in a single call (bulk).
     // Each item makes a MANUFACTURED batch at its own cost/selling (same cost+selling → consolidate).
@@ -143,7 +107,7 @@ public class InventoryService {
             batch.setTotalCost(batch.getQuantityReceived().multiply(unitCost));
         } else {
             batch = new InventoryBatch();
-            batch.setBatchNumber(generateBatchNumber.generate());
+            batch.setBatchNumber(documentNumberGenerator.nextBatchNumber());
             batch.setProduct(product);
             batch.setSource(ProductSource.MANUFACTURED.name());
             batch.setSourceId(product.getId()); // no production detail; product is the source ref
@@ -170,22 +134,6 @@ public class InventoryService {
                 .batchValue(batchValue).status(batch.getStatus().name()).build();
     }
 
-    @Transactional
-    public void removeProductionStock(InventoryBatch batch, BigDecimal qty) {
-        BigDecimal newReceived = batch.getQuantityReceived().subtract(qty);
-        if (newReceived.compareTo(BigDecimal.ZERO) <= 0) {
-            qrUnitService.removeAvailableUnits(batch.getBatchNumber(), batch.getQuantityAvailable().intValue());
-            inventoryBatchRepository.delete(batch);
-            return;
-        }
-        BigDecimal newAvailable = batch.getQuantityAvailable().subtract(qty);
-        batch.setQuantityReceived(newReceived);
-        batch.setQuantityAvailable(newAvailable);
-        batch.setTotalCost(newReceived.multiply(batch.getUnitCost()));
-        batch.setStatus(newAvailable.compareTo(BigDecimal.ZERO) > 0 ? InventoryBatchStatus.ACTIVE : InventoryBatchStatus.SOLD);
-        qrUnitService.removeAvailableUnits(batch.getBatchNumber(), qty.intValue());
-        inventoryBatchRepository.save(batch);
-    }
 
 
     public PageResponse<InventoryResponse> getInventory(Pageable pageable) {

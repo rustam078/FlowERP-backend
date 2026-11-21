@@ -9,7 +9,7 @@ import java.math.BigDecimal;
 @Entity
 @Table(name = "inventory_transaction")
 @Builder
-public class InventoryTransaction extends BaseEntity {
+public class InventoryTransaction extends PortfolioScopedEntity {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "sales_order_item_id", nullable = false)

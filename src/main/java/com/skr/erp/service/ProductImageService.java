@@ -49,7 +49,7 @@ public class ProductImageService {
 
     @Transactional(readOnly = true)
     public ProductImage get(UUID productId) {
-        return productImageRepository.findByProductId(productId)
+        return productImageRepository.findForPublicView(productId)
                 .orElseThrow(() -> new BusinessException("No image for this product"));
     }
 

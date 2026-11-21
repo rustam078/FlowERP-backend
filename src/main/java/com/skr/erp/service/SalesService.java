@@ -1,5 +1,6 @@
 package com.skr.erp.service;
 
+import com.skr.erp.util.DocumentNumberGenerator;
 import com.skr.erp.common.constants.InventoryBatchStatus;
 import com.skr.erp.common.constants.InventoryTransactionType;
 import com.skr.erp.common.constants.PaymentRules;
@@ -42,6 +43,7 @@ public class SalesService {
     private final ProductRepository productRepository;
     private final InventoryBatchRepository inventoryBatchRepository;
     private final SalesOrderRepository salesOrderRepository;
+    private final DocumentNumberGenerator documentNumberGenerator;
     private final SalesOrderItemRepository salesOrderItemRepository;
     private final InventoryTransactionRepository inventoryTransactionRepository;
     private final SystemSettingRepository systemSettingRepository;
@@ -174,7 +176,7 @@ public class SalesService {
         // ==========================
 
         SalesOrder order = SalesOrder.builder()
-                .invoiceNo(nextInvoiceNumber())
+                .invoiceNo(documentNumberGenerator.nextSaleInvoiceNumber())
                 .customerName(customer.getName())
                 .customerMobile(customer.getMobile())
                 .customerEmail(customer.getEmail())
@@ -1159,11 +1161,6 @@ public class SalesService {
         return InventoryTransaction.builder()
                 .salesOrderItem(orderItem).batch(batch).product(orderItem.getProduct())
                 .transactionType(type).quantity(qty).unitCost(batch.getUnitCost()).build();
-    }
-
-    private String nextInvoiceNumber() {
-        long count = salesOrderRepository.count() + 1;
-        return "INV-" + String.format("%06d", count);
     }
 
 

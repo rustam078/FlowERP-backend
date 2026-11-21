@@ -12,7 +12,7 @@ import java.time.LocalDate;
 @Table(name = "employee_attendance", uniqueConstraints = @UniqueConstraint(columnNames = {"employee_id", "date"}))
 @Getter
 @Setter
-public class EmployeeAttendance extends BaseEntity {
+public class EmployeeAttendance extends PortfolioScopedEntity {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "employee_id", nullable = false)

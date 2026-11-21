@@ -11,7 +11,7 @@ import java.util.UUID;
 @Table(name = "production_entry_detail")
 @Getter
 @Setter
-public class ProductionEntryDetail extends BaseEntity {
+public class ProductionEntryDetail extends PortfolioScopedEntity {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "production_entry_id", nullable = false)

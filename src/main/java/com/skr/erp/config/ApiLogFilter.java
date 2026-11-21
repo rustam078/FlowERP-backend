@@ -27,10 +27,9 @@ public class ApiLogFilter extends OncePerRequestFilter {
         String uri = request.getRequestURI();
         String query = request.getQueryString();
         String path = query == null ? uri : uri + "?" + query;
-        String user = request.getHeader("X-User-Id");
 
         long start = System.currentTimeMillis();
-        log.info("--> {} {}{}", method, path, user != null ? " [user " + user + "]" : "");
+        log.info("--> {} {}", method, path); // query string already carries userId / portfolioId
         try {
             filterChain.doFilter(request, response);
         } finally {

@@ -2,6 +2,9 @@ package com.skr.erp.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import lombok.Getter;
 import lombok.Setter;
@@ -12,9 +15,11 @@ import lombok.Setter;
 @Setter
 public class AppUser extends BaseEntity {
 
-    @Column(nullable = false, unique = true)
-    private String username;
+    // Login id; unique across the whole system (case-insensitive), stored lower-case.
+    @Column(nullable = false, length = 150)
+    private String email;
 
+    // BCrypt hash.
     @Column(nullable = false)
     private String password;
 
@@ -26,4 +31,9 @@ public class AppUser extends BaseEntity {
 
     @Column(name = "is_active")
     private Boolean active;
+
+    // Null only for SUPER_ADMIN.
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "portfolio_id")
+    private Portfolio portfolio;
 }

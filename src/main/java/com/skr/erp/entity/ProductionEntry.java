@@ -13,7 +13,7 @@ import java.util.List;
 @Table(name = "production_entry")
 @Getter
 @Setter
-public class ProductionEntry extends BaseEntity {
+public class ProductionEntry extends PortfolioScopedEntity {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "employee_id", nullable = false)

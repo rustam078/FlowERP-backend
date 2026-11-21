@@ -16,7 +16,7 @@ import java.math.BigDecimal;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class SalesOrder extends BaseEntity {
+public class SalesOrder extends PortfolioScopedEntity {
 
     @Column(nullable = false, unique = true)
     private String invoiceNo;

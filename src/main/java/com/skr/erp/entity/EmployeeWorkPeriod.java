@@ -12,7 +12,7 @@ import java.time.LocalDate;
 @Table(name = "employee_work_period")
 @Getter
 @Setter
-public class EmployeeWorkPeriod extends BaseEntity {
+public class EmployeeWorkPeriod extends PortfolioScopedEntity {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "employee_id", nullable = false)

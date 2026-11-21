@@ -14,7 +14,7 @@ import java.util.UUID;
 @Entity
 @Table(name = "inventory_batch")
 @Data
-public class InventoryBatch extends BaseEntity {
+public class InventoryBatch extends PortfolioScopedEntity {
 
     @Column(nullable = false, unique = true)
     private String batchNumber;

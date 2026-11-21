@@ -11,7 +11,7 @@ import java.time.LocalDate;
 @Table(name = "product_material_cost")
 @Getter
 @Setter
-public class ProductMaterialCost extends BaseEntity {
+public class ProductMaterialCost extends PortfolioScopedEntity {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "product_id", nullable = false)

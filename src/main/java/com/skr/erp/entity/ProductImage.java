@@ -13,7 +13,7 @@ import java.util.UUID;
 @Table(name = "product_image")
 @Getter
 @Setter
-public class ProductImage extends BaseEntity {
+public class ProductImage extends PortfolioScopedEntity {
 
     @Column(name = "product_id", nullable = false, unique = true)
     private UUID productId;

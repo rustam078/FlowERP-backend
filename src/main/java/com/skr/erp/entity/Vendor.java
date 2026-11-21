@@ -10,7 +10,7 @@ import lombok.Setter;
 @Table(name = "vendor")
 @Getter
 @Setter
-public class Vendor extends BaseEntity {
+public class Vendor extends PortfolioScopedEntity {
 
     @Column(nullable = false, length = 150)
     private String name;

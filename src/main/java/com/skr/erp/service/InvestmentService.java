@@ -1,5 +1,6 @@
 package com.skr.erp.service;
 
+import com.skr.erp.util.DocumentNumberGenerator;
 import com.skr.erp.common.constants.*;
 import com.skr.erp.dto.request.AddPaymentRequest;
 import com.skr.erp.dto.request.CreateInvestmentItemRequest;
@@ -43,6 +44,7 @@ public class InvestmentService {
     private final InventoryService inventoryService;
     private final InvestmentPaymentRepository investmentPaymentRepository;
     private final SystemSettingRepository systemSettingRepository;
+    private final DocumentNumberGenerator documentNumberGenerator;
 
     private static String money(NumberFormat nf, BigDecimal b) {
         return b != null ? nf.format(b) : nf.format(BigDecimal.ZERO);
@@ -76,7 +78,7 @@ public class InvestmentService {
             investment.setInvoiceNumber(request.getInvoiceNumber());
 
         } else {
-            investment.setInvoiceNumber(generateInvoiceNumber());
+            investment.setInvoiceNumber(documentNumberGenerator.nextPurchaseInvoiceNumber());
         }
         investment.setInvestmentType(request.getInvestmentType());
         investment.setPurchaseDate(request.getPurchaseDate());
@@ -198,10 +200,6 @@ public class InvestmentService {
         }
     }
 
-    private String generateInvoiceNumber() {
-        long count = investmentRepository.count() + 1;
-        return String.format("INV-%06d", count);
-    }
 
 
     private List<InvestmentItem> buildInvestmentItems(Investment investment, List<CreateInvestmentItemRequest> requests) {

@@ -1,6 +1,7 @@
 package com.skr.erp.repository;
 
 import com.skr.erp.entity.EmployeeWorkPeriod;
+import com.skr.erp.security.RequestContext;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -28,7 +29,8 @@ public interface EmployeeWorkPeriodRepository extends JpaRepository<EmployeeWork
     SELECT EXISTS (
         SELECT 1
         FROM employee_work_period ewp
-        WHERE ewp.employee_id = :employeeId
+        WHERE ewp.portfolio_id =""" + RequestContext.PORTFOLIO_SQL_PARAM + """
+          AND ewp.employee_id = :employeeId
           AND ewp.start_date <= :leaveEndDate
           AND (
               ewp.end_date IS NULL

@@ -2,6 +2,7 @@ package com.skr.erp.repository;
 
 import com.skr.erp.common.constants.PaymentRules;
 import com.skr.erp.dto.request.RevenueFilter;
+import com.skr.erp.security.RequestContext;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.Tuple;
@@ -10,6 +11,7 @@ import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Read-only view over every real money movement, taken live from each module's own payment table
@@ -29,16 +31,17 @@ public class RevenueTransactionRepository {
                        p.payment_date AS txn_date, p.created_at, s.invoice_no AS reference, p.reference_invoice_no AS note,
                        s.customer_name AS party, s.customer_mobile AS contact, p.mode, p.amount, 'IN' AS direction, s.id AS source_id
                 FROM customer_payment p JOIN sales_order s ON s.id = p.sales_order_id
+                WHERE p.portfolio_id = :portfolioId
                 UNION ALL
                 SELECT ip.id, 'INVESTMENT', i.investment_type, ip.payment_date, ip.created_at, i.invoice_number, ip.reference,
                        v.name, v.mobile, ip.mode, ip.amount, 'OUT', i.id
                 FROM investment_payment ip JOIN investment i ON i.id = ip.investment_id LEFT JOIN vendor v ON v.id = i.vendor_id
-                WHERE i.is_deleted = false
+                WHERE ip.portfolio_id = :portfolioId AND i.is_deleted = false
                 UNION ALL
                 SELECT l.id, 'EMPLOYEE', l.type, l.entry_date, l.created_at, e.employee_code, l.note,
                        e.full_name, e.mobile_number, l.mode, l.amount, 'OUT', e.id
                 FROM employee_ledger l JOIN employee e ON e.id = l.employee_id
-                WHERE l.type IN ('ADVANCE', 'PAYOUT', 'SPEND')
+                WHERE l.portfolio_id = :portfolioId AND l.type IN ('ADVANCE', 'PAYOUT', 'SPEND')
             )
             """;
 
@@ -85,6 +88,7 @@ public class RevenueTransactionRepository {
     @SuppressWarnings("unchecked")
     private NativeQuery<Tuple> nativeQuery(String sql, RevenueFilter f) {
         NativeQuery<Tuple> query = entityManager.createNativeQuery(sql, Tuple.class).unwrap(NativeQuery.class);
+        query.setParameter("portfolioId", RequestContext.portfolioId(), UUID.class); // signed-in portfolio only
         query.setParameter("module", f.getModule() != null ? f.getModule().name() : null, String.class);
         query.setParameter("type", blankToNull(f.getType()), String.class);
         query.setParameter("mode", f.getPaymentMode() != null ? f.getPaymentMode().name() : null, String.class);

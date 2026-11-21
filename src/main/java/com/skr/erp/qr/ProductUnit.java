@@ -1,7 +1,7 @@
 package com.skr.erp.qr;
 
 import com.skr.erp.common.constants.ProductUnitStatus;
-import com.skr.erp.entity.BaseEntity;
+import com.skr.erp.entity.PortfolioScopedEntity;
 import com.skr.erp.entity.Product;
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -20,7 +20,7 @@ import java.util.UUID;
 @Table(name = "product_unit")
 @Getter
 @Setter
-public class ProductUnit extends BaseEntity {
+public class ProductUnit extends PortfolioScopedEntity {
 
     /** e.g. {@code BT000087-001}. Unique across the system. */
     @Column(nullable = false, unique = true, length = 40)

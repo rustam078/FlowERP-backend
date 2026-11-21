@@ -16,7 +16,7 @@ import java.util.List;
 @Table(name = "investment")
 @Getter
 @Setter
-public class Investment extends BaseEntity {
+public class Investment extends PortfolioScopedEntity {
 
     @Column(nullable = false, unique = true)
     private String invoiceNumber;

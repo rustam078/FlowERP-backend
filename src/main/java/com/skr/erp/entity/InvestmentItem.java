@@ -12,7 +12,7 @@ import java.math.BigDecimal;
 @Table(name = "investment_item")
 @Getter
 @Setter
-public class InvestmentItem extends BaseEntity {
+public class InvestmentItem extends PortfolioScopedEntity {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "investment_id", nullable = false)

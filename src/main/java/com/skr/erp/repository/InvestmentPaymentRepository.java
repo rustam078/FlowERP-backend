@@ -1,6 +1,7 @@
 package com.skr.erp.repository;
 
 import com.skr.erp.entity.InvestmentPayment;
+import com.skr.erp.security.RequestContext;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -37,9 +38,11 @@ public interface InvestmentPaymentRepository extends JpaRepository<InvestmentPay
     // (the newest invoice in each payment group). Used for the "Amount Received" column in the list.
     @Query(value =
             "SELECT o.investment_id, g.total FROM " +
-            "(SELECT COALESCE(payment_group_id, id) gid, SUM(amount) total FROM investment_payment GROUP BY COALESCE(payment_group_id, id)) g " +
+            "(SELECT COALESCE(payment_group_id, id) gid, SUM(amount) total FROM investment_payment " +
+            "  WHERE portfolio_id =" + RequestContext.PORTFOLIO_SQL_PARAM + "GROUP BY COALESCE(payment_group_id, id)) g " +
             "JOIN (SELECT DISTINCT ON (COALESCE(p.payment_group_id, p.id)) COALESCE(p.payment_group_id, p.id) gid, p.investment_id " +
             "      FROM investment_payment p JOIN investment i ON i.id = p.investment_id " +
+            "      WHERE p.portfolio_id =" + RequestContext.PORTFOLIO_SQL_PARAM +
             "      ORDER BY COALESCE(p.payment_group_id, p.id), i.created_at DESC) o ON o.gid = g.gid",
             nativeQuery = true)
     List<Object[]> receivedByOriginInvoice();

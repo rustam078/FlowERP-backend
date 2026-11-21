@@ -2,6 +2,7 @@ package com.skr.erp.repository;
 
 import com.skr.erp.common.constants.PaymentRules;
 import com.skr.erp.entity.CustomerPayment;
+import com.skr.erp.security.RequestContext;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -35,7 +36,8 @@ public interface CustomerPaymentRepository extends JpaRepository<CustomerPayment
     // Cash from due settlements (payments made after the invoice's own checkout, not via a later sale) in a period.
     @Query(value = """
                 SELECT COALESCE(SUM(p.amount), 0) FROM customer_payment p JOIN sales_order s ON s.id = p.sales_order_id
-                WHERE p.reference_invoice_no IS NULL
+                WHERE p.portfolio_id =""" + RequestContext.PORTFOLIO_SQL_PARAM + """
+                  AND p.reference_invoice_no IS NULL
                   AND """ + PaymentRules.PAID_AFTER_CHECKOUT_SQL + """
                   AND (CAST(:start AS timestamp) IS NULL OR p.created_at >= CAST(:start AS timestamp))
                   AND (CAST(:end AS timestamp) IS NULL OR p.created_at < CAST(:end AS timestamp))
